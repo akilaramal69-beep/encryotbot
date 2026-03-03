@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -488,14 +488,6 @@ class SecureImageBot:
                     )
                 except Exception as bot_error:
                     logger.error(f"DM send failed: {bot_error}")
-                    bot_username = context.bot.username
-                    await query.message.reply_text(
-                        f"❌ Cannot send image to your DM.\n\n"
-                        f"Please:\n"
-                        f"1. Start the bot: @${bot_username}\n"
-                        f"2. Then press 'Get Original' again",
-                        parse_mode="Markdown"
-                    )
                     await self.log(
                         context,
                         f"❌ DM failed for {user_name} {user_username}\n"
