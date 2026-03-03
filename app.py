@@ -9,6 +9,7 @@ import secrets
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
+from aiohttp import web
 
 from PIL import Image, ImageFilter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -554,8 +555,25 @@ class SecureImageBot:
         
         application.add_error_handler(self.error_handler)
         
+        async def health(request):
+            return web.Response(text="OK", status=200)
+        
+        async def start_health_server():
+            app = web.Application()
+            app.router.add_get('/health', health)
+            app.router.add_get('/', health)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+            await site.start()
+            logger.info("Health server started on port 8080")
+        
+        async def run():
+            await start_health_server()
+            await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
         logger.info("Starting bot in polling mode")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        asyncio.run(run())
 
 
 def main():
