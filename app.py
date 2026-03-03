@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -226,7 +226,8 @@ class SecureImageBot:
                     "❌ Invalid channel ID. Use format: -1001234567890"
                 )
         except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+            await self.log(context, f"❌ Set channel error: {str(e)}")
+            await update.message.reply_text("❌ Error setting channel.")
         
         return ConversationHandler.END
 
@@ -254,7 +255,8 @@ class SecureImageBot:
                     "❌ Invalid channel ID. Use format: -1001234567890"
                 )
         except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+            await self.log(context, f"❌ Set log channel error: {str(e)}")
+            await update.message.reply_text("❌ Error setting log channel.")
         
         return ConversationHandler.END
 
@@ -271,7 +273,8 @@ class SecureImageBot:
                 await update.message.reply_text(f"✅ Webhook already set to: {webhook_url}")
                 await self.log(context, f"🔗 Webhook set to: {webhook_url}")
             except Exception as e:
-                await update.message.reply_text(f"❌ Error: {str(e)}")
+                await self.log(context, f"❌ Webhook error: {str(e)}")
+                await update.message.reply_text("❌ Error setting webhook.")
         else:
             await update.message.reply_text("❌ No webhook URL configured. Set WEBHOOK_URL env var first.")
 
@@ -403,6 +406,7 @@ class SecureImageBot:
                  
         except Exception as e:
             logger.error(f"Error decrypting: {e}")
+            await self.log(context, f"❌ Decrypt error: {str(e)[:100]}")
             msg = "❌ Error decrypting image."
             if update.message:
                 await update.message.reply_text(msg)
@@ -439,22 +443,24 @@ class SecureImageBot:
                 logger.error(f"Channel membership check failed: {e}")
                 member = None
             
+            user_name = query.from_user.first_name or "User"
+            user_username = f"@{query.from_user.username}" if query.from_user.username else ""
+            
             if not member or member.status in ['left', 'kicked']:
+                await self.log(
+                    context,
+                    f"⚠️ User {user_name} {user_username} (ID: {user_id}) not in channel"
+                )
                 await query.message.reply_text(
-                    "❌ You must join our channel first!\n\n"
-                    "Join: @your_channel_link\n"
-                    "Then press Get Original again.",
-                    parse_mode="Markdown"
+                    "❌ You must join the channel first!"
                 )
                 return
             
             data = self.store.get(image_id)
             if not data:
-                await query.message.reply_text("❌ Image not found or expired.")
+                await self.log(context, f"⚠️ Image not found: {image_id}")
+                await query.message.reply_text("❌ Image not found.")
                 return
-            
-            user_name = query.from_user.first_name or "User"
-            user_username = f"@{query.from_user.username}" if query.from_user.username else ""
             
             try:
                 decrypted = self.encryptor.decrypt(data["encrypted"])
