@@ -7,7 +7,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -22,6 +22,8 @@ from telegram.ext import (
 )
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -31,51 +33,54 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_SETTING = 1
 
+
 class ImageStore:
-    def __init__(self, ttl_seconds: int = 3600):
-        self._store: Dict[str, dict] = {}
+    def __init__(self, connection_string: str, ttl_seconds: int = 3600):
         self._ttl = ttl_seconds
+        self._client = MongoClient(connection_string)
+        self._db = self._client['secure_image_bot']
+        self._collection = self._db['images']
+        self._collection.create_index("expire_at", expireAfterSeconds=ttl_seconds)
+        logger.info("MongoDB connected successfully")
 
     def add(self, encrypted_data: bytes, preview_data: bytes, filename: str) -> str:
         image_id = secrets.token_hex(8)
-        self._store[image_id] = {
+        expire_at = datetime.utcnow() + timedelta(seconds=self._ttl)
+        self._collection.insert_one({
+            "_id": image_id,
             "encrypted": encrypted_data,
             "preview": preview_data,
             "filename": filename,
-            "created_at": time.time(),
-        }
-        self._cleanup()
+            "created_at": datetime.utcnow(),
+            "expire_at": expire_at,
+        })
         return image_id
 
     def get(self, image_id: str) -> Optional[dict]:
-        self._cleanup()
-        return self._store.get(image_id)
+        result = self._collection.find_one({"_id": image_id})
+        if result:
+            return {
+                "encrypted": result["encrypted"],
+                "preview": result["preview"],
+                "filename": result["filename"],
+                "created_at": result["created_at"].timestamp(),
+            }
+        return None
 
     def remove(self, image_id: str) -> bool:
-        if image_id in self._store:
-            del self._store[image_id]
-            return True
-        return False
+        result = self._collection.delete_one({"_id": image_id})
+        return result.deleted_count > 0
 
-    def list_all(self) -> list:
-        self._cleanup()
-        result = []
-        for img_id, data in self._store.items():
-            result.append({
-                "id": img_id,
-                "filename": data["filename"],
-                "created_at": datetime.fromtimestamp(data["created_at"]).strftime("%Y-%m-%d %H:%M"),
-            })
-        return sorted(result, key=lambda x: x["created_at"], reverse=True)
-
-    def _cleanup(self):
-        current_time = time.time()
-        expired = [
-            img_id for img_id, data in self._store.items()
-            if current_time - data["created_at"] > self._ttl
+    def list_all(self) -> List[dict]:
+        results = self._collection.find().sort("created_at", -1).limit(20)
+        return [
+            {
+                "id": r["_id"],
+                "filename": r["filename"],
+                "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for r in results
         ]
-        for img_id in expired:
-            del self._store[img_id]
 
 
 class Encryptor:
@@ -111,17 +116,21 @@ class SecureImageBot:
         self.bot_token = os.environ.get("BOT_TOKEN", "")
         admin_ids_str = os.environ.get("ADMIN_IDS", "")
         encryption_key_str = os.environ.get("ENCRYPTION_KEY", "")
+        mongo_uri = os.environ.get("MONGO_URI", "")
         
         if not encryption_key_str:
             encryption_key_str = secrets.token_hex(32)
         
-        if len(encryption_key_str) == 64:
-            key = bytes.fromhex(encryption_key_str)
-        else:
-            key = base64.b64decode(encryption_key_str)
+        try:
+            if len(encryption_key_str) == 64:
+                key = bytes.fromhex(encryption_key_str)
+            else:
+                key = base64.b64decode(encryption_key_str)
+        except Exception:
+            key = hashlib.sha256(encryption_key_str.encode()).digest()
         
         self.encryptor = Encryptor(key)
-        self.store = ImageStore(ttl_seconds=3600)
+        self.store = ImageStore(mongo_uri, ttl_seconds=3600)
         
         self.admin_ids = set(int(x.strip()) for x in admin_ids_str.split(",") if x.strip())
         self.channel_id = os.environ.get("CHANNEL_ID", "")
@@ -220,20 +229,22 @@ class SecureImageBot:
             await update.message.reply_text("❌ Channel not set. Use /setchannel first.")
             return
         
-        await update.message.reply_text("🔄 Processing and encrypting image...")
+        status_msg = await update.message.reply_text("🔄 Downloading image...")
         
         try:
             photo = update.message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             image_bytes = await file.download_as_bytearray()
             
+            await status_msg.edit_text("🔐 Encrypting image...")
             encrypted = self.encryptor.encrypt(bytes(image_bytes))
+            
+            await status_msg.edit_text("🖼️ Creating preview...")
             preview = create_preview(bytes(image_bytes))
             filename = f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
             
+            await status_msg.edit_text("💾 Storing image...")
             image_id = self.store.add(encrypted, preview, filename)
-            
-            preview_base64 = base64.b64encode(preview).decode()
             
             keyboard = [
                 [
@@ -243,7 +254,8 @@ class SecureImageBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await context.bot.send_photo(
+            await status_msg.edit_text("📤 Sending to channel...")
+            sent_msg = await context.bot.send_photo(
                 chat_id=self.channel_id,
                 photo=preview,
                 caption=f"🖼️ Secure Image\n"
@@ -253,17 +265,20 @@ class SecureImageBot:
                 reply_markup=reply_markup,
             )
             
-            await update.message.reply_text(
-                f"✅ Image uploaded!\n\n"
+            await status_msg.edit_text(
+                f"✅ Image uploaded successfully!\n\n"
                 f"Image ID: `{image_id}`\n"
-                f"Preview sent to channel.",
+                f"Message ID: {sent_msg.message_id}",
                 parse_mode="Markdown"
             )
-            
+             
         except Exception as e:
             logger.error(f"Error processing image: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-
+            if 'status_msg' in locals():
+                await status_msg.edit_text(f"❌ Error: {str(e)}")
+            else:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+              
     async def get_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE, image_id: Optional[str] = None):
         if not image_id and update.message:
             image_id = " ".join(context.args)
