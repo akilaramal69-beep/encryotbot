@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -371,16 +371,13 @@ class SecureImageBot:
             image_id = " ".join(context.args)
         
         if not image_id:
-            await update.message.reply_text("Usage: /get <image_id>")
             return
         
         image_id = image_id.strip()
         data = self.store.get(image_id)
         
         if not data:
-            msg = "❌ Image not found or expired."
-            if update.message:
-                await update.message.reply_text(msg)
+            await self.log(context, f"⚠️ Image not found: {image_id}")
             return
         
         try:
@@ -407,9 +404,6 @@ class SecureImageBot:
         except Exception as e:
             logger.error(f"Error decrypting: {e}")
             await self.log(context, f"❌ Decrypt error: {str(e)[:100]}")
-            msg = "❌ Error decrypting image."
-            if update.message:
-                await update.message.reply_text(msg)
 
     async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Bot is running!")
@@ -451,15 +445,11 @@ class SecureImageBot:
                     context,
                     f"⚠️ User {user_name} {user_username} (ID: {user_id}) not in channel"
                 )
-                await query.message.reply_text(
-                    "❌ You must join the channel first!"
-                )
                 return
             
             data = self.store.get(image_id)
             if not data:
                 await self.log(context, f"⚠️ Image not found: {image_id}")
-                await query.message.reply_text("❌ Image not found.")
                 return
             
             try:
@@ -488,6 +478,10 @@ class SecureImageBot:
                     )
                 except Exception as bot_error:
                     logger.error(f"DM send failed: {bot_error}")
+                    await query.answer(
+                        "❌ Cannot send. Start bot first: @imageservebot",
+                        show_alert=True
+                    )
                     await self.log(
                         context,
                         f"❌ DM failed for {user_name} {user_username}\n"
@@ -500,10 +494,10 @@ class SecureImageBot:
         elif data.startswith("del_"):
             image_id = data[4:]
             self.store.remove(image_id)
-            await query.message.reply_text("✅ Image deleted from memory.")
+            await self.log(context, f"🗑️ Image deleted: {image_id}")
         
         elif data == "get_image":
-            await query.message.reply_text("Please provide image ID: /get <image_id>")
+            pass
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Update {update} caused error {context.error}")
