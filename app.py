@@ -110,9 +110,16 @@ def generate_key_from_password(password: str) -> bytes:
 def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
-    blurred = img.filter(ImageFilter.GaussianBlur(radius=15))
+    
+    pixel_size = 15
+    img_small = img.resize(
+        (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
+        Image.NEAREST
+    )
+    pixelated = img_small.resize(img.size, Image.NEAREST)
+    
     output = io.BytesIO()
-    blurred.save(output, format="JPEG", quality=60)
+    pixelated.save(output, format="JPEG", quality=60)
     return output.getvalue()
 
 
@@ -314,10 +321,7 @@ class SecureImageBot:
             logger.info(f"Stored image with ID: {image_id}")
             
             keyboard = [
-                [
-                    InlineKeyboardButton("🔓 Get Original", callback_data=f"req_{image_id}"),
-                    InlineKeyboardButton("📋 Copy ID", callback_data=f"copy_{image_id}"),
-                ],
+                [InlineKeyboardButton("🔓 Get Original (Uncensored)", callback_data=f"req_{image_id}")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -496,10 +500,6 @@ class SecureImageBot:
             except Exception as e:
                 logger.error(f"Error sending image to user: {e}")
                 await self.log(context, f"❌ Error: {str(e)[:100]}")
-        
-        elif data.startswith("copy_"):
-            image_id = data[5:]
-            await query.message.reply_text(f"Image ID: `{image_id}`", parse_mode="Markdown")
         
         elif data.startswith("del_"):
             image_id = data[4:]
