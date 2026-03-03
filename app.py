@@ -229,12 +229,15 @@ class SecureImageBot:
             await update.message.reply_text("❌ Channel not set. Use /setchannel first.")
             return
         
+        logger.info(f"Channel ID: {self.channel_id}, Admin IDs: {self.admin_ids}")
+        
         status_msg = await update.message.reply_text("🔄 Downloading image...")
         
         try:
             photo = update.message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             image_bytes = await file.download_as_bytearray()
+            logger.info(f"Downloaded image: {len(image_bytes)} bytes")
             
             await status_msg.edit_text("🔐 Encrypting image...")
             encrypted = self.encryptor.encrypt(bytes(image_bytes))
@@ -245,6 +248,7 @@ class SecureImageBot:
             
             await status_msg.edit_text("💾 Storing image...")
             image_id = self.store.add(encrypted, preview, filename)
+            logger.info(f"Stored image with ID: {image_id}")
             
             keyboard = [
                 [
@@ -264,6 +268,7 @@ class SecureImageBot:
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
+            logger.info(f"Sent to channel: {sent_msg.message_id}")
             
             await status_msg.edit_text(
                 f"✅ Image uploaded successfully!\n\n"
@@ -273,10 +278,10 @@ class SecureImageBot:
             )
              
         except Exception as e:
-            logger.error(f"Error processing image: {e}")
-            if 'status_msg' in locals():
+            logger.error(f"Error processing image: {e}", exc_info=True)
+            try:
                 await status_msg.edit_text(f"❌ Error: {str(e)}")
-            else:
+            except:
                 await update.message.reply_text(f"❌ Error: {str(e)}")
               
     async def get_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE, image_id: Optional[str] = None):
