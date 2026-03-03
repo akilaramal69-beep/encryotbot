@@ -236,15 +236,19 @@ class SecureImageBot:
             preview_base64 = base64.b64encode(preview).decode()
             
             keyboard = [
-                [InlineKeyboardButton("🔓 Get Original", callback_data=f"req_{image_id}")],
+                [
+                    InlineKeyboardButton("🔓 Get Original", callback_data=f"req_{image_id}"),
+                    InlineKeyboardButton("📋 Copy ID", callback_data=f"copy_{image_id}"),
+                ],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await context.bot.send_photo(
                 chat_id=self.channel_id,
                 photo=preview,
-                caption=f"🖼️ Image ID: `{image_id}`\n"
-                        f"Type /get {image_id} to get the original",
+                caption=f"🖼️ Secure Image\n"
+                        f"ID: `{image_id}`\n\n"
+                        f"🔒 Tap 'Get Original' to view",
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
@@ -326,6 +330,10 @@ class SecureImageBot:
         if data.startswith("req_"):
             image_id = data[4:]
             await self.get_image(update, context, image_id)
+        
+        elif data.startswith("copy_"):
+            image_id = data[5:]
+            await query.message.reply_text(f"Image ID: `{image_id}`", parse_mode="Markdown")
         
         elif data.startswith("del_"):
             image_id = data[4:]
