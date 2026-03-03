@@ -161,50 +161,41 @@ class SecureImageBot:
             if args[0] == f"admin_{user_id}":
                 self.admin_ids.add(user_id)
                 await update.message.reply_text(
-                    "✅ You are now registered as admin!\n\n"
-                    "Commands:\n"
-                    "/setchannel - Set target channel\n"
-                    "/help - Show all commands"
+                    "✅ You are now registered as admin!"
                 )
                 return
         
-        keyboard = [
-            [InlineKeyboardButton("📸 Get Image", callback_data="get_image")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+        bot_username = context.bot.username
         await update.message.reply_text(
-            "🔒 Secure Image Bot\n\n"
-            "Send /help for available commands.",
-            reply_markup=reply_markup
+            f"🔒 Secure Image Bot\n\n"
+            f"Welcome! You can now request images from the channel.\n\n"
+            f"Use /get <image_id> to view images or click from the channel."
         )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         is_admin = user_id in self.admin_ids
         
-        admin_help = """
-👨‍💼 Admin Commands:
-/setchannel - Set target channel
-/setlogchannel - Set log channel
-/setwebhook <url> - Set webhook URL
-/upload - Upload an image to encrypt
-/list - List all stored images
-/health - Check bot health
-""" if is_admin else ""
-        
-        await update.message.reply_text(
-            f"""
-📋 Available Commands:
-
-/start - Start the bot
-/help - Show this help
-/get <image_id> - Get decrypted image
-/list - List available images
-
-{admin_help}
-            """.strip()
-        )
+        if is_admin:
+            await update.message.reply_text(
+                "👨‍💼 Admin Commands:\n\n"
+                "/start - Start the bot\n"
+                "/help - Show help\n"
+                "/setchannel - Set target channel\n"
+                "/setlogchannel - Set log channel\n"
+                "/setwebhook <url> - Set webhook\n"
+                "/upload - Upload image (send photo)\n"
+                "/list - List images\n"
+                "/health - Check health\n\n"
+                "To upload: send photo with caption"
+            )
+        else:
+            await update.message.reply_text(
+                "🔒 Secure Image Bot\n\n"
+                "Get images from the channel using:\n"
+                "/get <image_id>\n\n"
+                "Or tap 'Get Original' in channel"
+            )
 
     async def set_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -489,15 +480,22 @@ class SecureImageBot:
                     )
                 except Exception as bot_error:
                     logger.error(f"DM send failed: {bot_error}")
+                    bot_username = context.bot.username
+                    await query.message.reply_text(
+                        f"❌ Cannot send image to your DM.\n\n"
+                        f"Please:\n"
+                        f"1. Start the bot: @${bot_username}\n"
+                        f"2. Then press 'Get Original' again",
+                        parse_mode="Markdown"
+                    )
                     await self.log(
                         context,
                         f"❌ DM failed for {user_name} {user_username}\n"
-                        f"User may have blocked bot or not started it\n"
-                        f"Error: {str(bot_error)[:100]}"
+                        f"User may have blocked bot or not started it"
                     )
             except Exception as e:
                 logger.error(f"Error sending image to user: {e}")
-                await query.message.reply_text(f"❌ Error: {str(e)}")
+                await self.log(context, f"❌ Error: {str(e)[:100]}")
         
         elif data.startswith("copy_"):
             image_id = data[5:]
