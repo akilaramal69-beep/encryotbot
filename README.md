@@ -73,6 +73,7 @@ A Telegram bot that encrypts images sent by admin, stores them briefly (ephemera
 | `BOT_TOKEN` | Yes | Telegram bot token |
 | `ADMIN_IDS` | Yes | Comma-separated admin user IDs |
 | `CHANNEL_ID` | Yes | Target channel ID (e.g., -1001234567890) |
+| `LOG_CHANNEL_ID` | No | Admin log channel ID |
 | `MONGO_URI` | Yes | MongoDB connection string |
 | `ENCRYPTION_KEY` | No | 64-char hex or base64 key (auto-generated if not set) |
 

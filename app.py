@@ -33,6 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CHANNEL_SETTING = 1
+LOG_CHANNEL_SETTING = 2
 
 
 class ImageStore:
@@ -135,8 +136,19 @@ class SecureImageBot:
         
         self.admin_ids = set(int(x.strip()) for x in admin_ids_str.split(",") if x.strip())
         self.channel_id = os.environ.get("CHANNEL_ID", "")
+        self.log_channel_id = os.environ.get("LOG_CHANNEL_ID", "")
         
         self._app: Optional[Application] = None
+
+    async def log(self, context: ContextTypes.DEFAULT_TYPE, message: str):
+        if self.log_channel_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=self.log_channel_id,
+                    text=f"📝 {message}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to send log: {e}")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -170,7 +182,8 @@ class SecureImageBot:
         
         admin_help = """
 👨‍💼 Admin Commands:
-/setchannel - Set target channel (admin only)
+/setchannel - Set target channel
+/setlogchannel - Set log channel
 /upload - Upload an image to encrypt
 /list - List all stored images
 """ if is_admin else ""
@@ -206,6 +219,34 @@ class SecureImageBot:
                 self.channel_id = channel_id
                 await update.message.reply_text(
                     f"✅ Channel set to: {channel_id}"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Invalid channel ID. Use format: -1001234567890"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+        
+        return ConversationHandler.END
+
+    async def set_log_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id not in self.admin_ids:
+            await update.message.reply_text("❌ Unauthorized. Admin only.")
+            return
+        
+        await update.message.reply_text(
+            "Please send the log channel ID (e.g., -1001234567890)"
+        )
+        return LOG_CHANNEL_SETTING
+
+    async def log_channel_received(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            channel_id = update.message.text.strip()
+            if channel_id.startswith("-") and channel_id[1:].isdigit():
+                self.log_channel_id = channel_id
+                await update.message.reply_text(
+                    f"✅ Log channel set to: {channel_id}"
                 )
             else:
                 await update.message.reply_text(
@@ -371,15 +412,13 @@ class SecureImageBot:
                 )
                 return
             
-            await query.message.reply_text(
-                "🔄 Fetching your image...\n"
-                "Please wait..."
-            )
-            
             data = self.store.get(image_id)
             if not data:
                 await query.message.reply_text("❌ Image not found or expired.")
                 return
+            
+            user_name = query.from_user.first_name or "User"
+            user_username = f"@{query.from_user.username}" if query.from_user.username else ""
             
             try:
                 decrypted = self.encryptor.decrypt(data["encrypted"])
@@ -399,13 +438,22 @@ class SecureImageBot:
                     
                     asyncio.create_task(delete_later())
                     
-                    await query.message.reply_text("✅ Image sent to your DM! Check @{}".format(context.bot.username))
+                    await self.log(
+                        context,
+                        f"✅ Image sent to {user_name} {user_username}\n"
+                        f"ID: `{image_id}` | File: {data['filename']}"
+                    )
                 except Exception as bot_error:
                     logger.error(f"DM send failed: {bot_error}")
                     await query.message.reply_text(
                         "❌ Cannot send DM. Please:\n"
                         "1. Start the bot: /start\n"
                         "2. Then press 'Get Original' again"
+                    )
+                    await self.log(
+                        context,
+                        f"❌ Failed to send to {user_name} {user_username}\n"
+                        f"Error: {str(bot_error)}"
                     )
             except Exception as e:
                 logger.error(f"Error sending image to user: {e}")
@@ -443,6 +491,17 @@ class SecureImageBot:
             fallbacks=[],
         )
         application.add_handler(conv_handler)
+        
+        log_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("setlogchannel", self.set_log_channel)],
+            states={
+                LOG_CHANNEL_SETTING: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.log_channel_received)
+                ],
+            },
+            fallbacks=[],
+        )
+        application.add_handler(log_conv_handler)
         
         application.add_handler(CommandHandler("upload", self.upload_image))
         application.add_handler(CommandHandler("get", self.get_image))
