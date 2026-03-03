@@ -1,5 +1,6 @@
 import os
 import io
+import asyncio
 import base64
 import uuid
 import hashlib
@@ -261,12 +262,14 @@ class SecureImageBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await status_msg.edit_text("📤 Sending to channel...")
+            bot_username = context.bot.username
             sent_msg = await context.bot.send_photo(
                 chat_id=self.channel_id,
                 photo=preview,
                 caption=f"🖼️ Secure Image\n"
                         f"ID: `{image_id}`\n\n"
-                        f"🔒 Tap 'Get Original' to view",
+                        f"🔒 Tap 'Get Original' to view\n"
+                        f"⚠️ You must start @{bot_username} first!",
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
@@ -345,13 +348,68 @@ class SecureImageBot:
 
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
+        user_id = query.from_user.id
         await query.answer()
         
         data = query.data
         
         if data.startswith("req_"):
             image_id = data[4:]
-            await self.get_image(update, context, image_id)
+            
+            try:
+                member = await context.bot.get_chat_member(self.channel_id, user_id)
+            except Exception as e:
+                logger.error(f"Channel membership check failed: {e}")
+                member = None
+            
+            if not member or member.status in ['left', 'kicked']:
+                await query.message.reply_text(
+                    "❌ You must join our channel first!\n\n"
+                    "Join: @your_channel_link\n"
+                    "Then press Get Original again.",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            await query.message.reply_text(
+                "🔄 Fetching your image...\n"
+                "Please wait..."
+            )
+            
+            data = self.store.get(image_id)
+            if not data:
+                await query.message.reply_text("❌ Image not found or expired.")
+                return
+            
+            try:
+                decrypted = self.encryptor.decrypt(data["encrypted"])
+                try:
+                    sent_msg = await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=io.BytesIO(decrypted),
+                        caption=f"📷 {data['filename']}\n\n🔒 Auto-delete in 60 minutes"
+                    )
+                    
+                    async def delete_later():
+                        await asyncio.sleep(3600)
+                        try:
+                            await context.bot.delete_message(chat_id=user_id, message_id=sent_msg.message_id)
+                        except:
+                            pass
+                    
+                    asyncio.create_task(delete_later())
+                    
+                    await query.message.reply_text("✅ Image sent to your DM! Check @{}".format(context.bot.username))
+                except Exception as bot_error:
+                    logger.error(f"DM send failed: {bot_error}")
+                    await query.message.reply_text(
+                        "❌ Cannot send DM. Please:\n"
+                        "1. Start the bot: /start\n"
+                        "2. Then press 'Get Original' again"
+                    )
+            except Exception as e:
+                logger.error(f"Error sending image to user: {e}")
+                await query.message.reply_text(f"❌ Error: {str(e)}")
         
         elif data.startswith("copy_"):
             image_id = data[5:]
