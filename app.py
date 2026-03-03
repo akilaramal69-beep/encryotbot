@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
@@ -105,7 +105,7 @@ def generate_key_from_password(password: str) -> bytes:
 def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
-    blurred = img.filter(Image.GaussianBlur(radius=15))
+    blurred = img.filter(ImageFilter.GaussianBlur(radius=15))
     output = io.BytesIO()
     blurred.save(output, format="JPEG", quality=60)
     return output.getvalue()
