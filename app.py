@@ -217,8 +217,10 @@ class SecureImageBot:
 
     async def upload_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
+        logger.info(f"Upload request from user {user_id}, admins: {self.admin_ids}")
+        
         if user_id not in self.admin_ids:
-            await update.message.reply_text("❌ Unauthorized. Admin only.")
+            await update.message.reply_text(f"❌ Unauthorized. Your ID: {user_id} is not admin.")
             return
         
         if not update.message.photo:
@@ -387,6 +389,8 @@ class SecureImageBot:
         application.add_handler(CommandHandler("upload", self.upload_image))
         application.add_handler(CommandHandler("get", self.get_image))
         application.add_handler(CommandHandler("list", self.list_images))
+        
+        application.add_handler(MessageHandler(filters.PHOTO, self.upload_image))
         
         application.add_handler(CallbackQueryHandler(self.button_handler))
         
