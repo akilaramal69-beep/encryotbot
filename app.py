@@ -568,12 +568,37 @@ class SecureImageBot:
             await site.start()
             logger.info("Health server started on port 8080")
         
-        async def run():
-            await start_health_server()
-            await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        async def run_bot():
+            await application.initialize()
+            await application.start()
+            
+            async def health(request):
+                return web.Response(text="OK")
+            
+            health_app = web.Application()
+            health_app.router.add_get('/health', health)
+            health_app.router.add_get('/', health)
+            
+            runner = web.AppRunner(health_app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+            await site.start()
+            logger.info("Health server started on port 8080")
+            
+            await application.updater.start_polling()
+            logger.info("Bot polling started")
+            
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await application.updater.stop()
+                await application.stop()
+                await application.shutdown()
         
-        logger.info("Starting bot in polling mode")
-        asyncio.run(run())
+        logger.info("Starting bot")
+        asyncio.run(run_bot())
 
 
 def main():
