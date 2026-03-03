@@ -556,14 +556,22 @@ class SecureImageBot:
         application.add_error_handler(self.error_handler)
         
         webhook_url = os.environ.get("WEBHOOK_URL", "")
-        if webhook_url:
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=int(os.environ.get("PORT", 8080)),
-                webhook_url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-            )
+        webhook_secret = os.environ.get("WEBHOOK_SECRET", secrets.token_hex(16))
+        
+        if webhook_url and webhook_url.startswith("https://"):
+            try:
+                application.run_webhook(
+                    listen="0.0.0.0",
+                    port=int(os.environ.get("PORT", 8080)),
+                    webhook_url=webhook_url,
+                    secret_token=webhook_secret,
+                    allowed_updates=Update.ALL_TYPES,
+                )
+            except Exception as e:
+                logger.error(f"Webhook error: {e}, falling back to polling")
+                application.run_polling(allowed_updates=Update.ALL_TYPES)
         else:
+            logger.info("Starting in polling mode")
             application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
