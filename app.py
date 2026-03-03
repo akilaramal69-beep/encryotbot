@@ -267,17 +267,16 @@ class SecureImageBot:
             await update.message.reply_text("❌ Unauthorized. Admin only.")
             return
         
-        if not context.args:
-            await update.message.reply_text("Usage: /setwebhook <url>")
-            return
-        
-        webhook_url = context.args[0]
-        try:
-            await context.bot.set_webhook(url=webhook_url)
-            await update.message.reply_text(f"✅ Webhook set to: {webhook_url}")
-            await self.log(context, f"🔗 Webhook set to: {webhook_url}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+        webhook_url = os.environ.get("WEBHOOK_URL", "")
+        if webhook_url and webhook_url.startswith("https://"):
+            try:
+                await context.bot.set_webhook(url=webhook_url)
+                await update.message.reply_text(f"✅ Webhook already set to: {webhook_url}")
+                await self.log(context, f"🔗 Webhook set to: {webhook_url}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+        else:
+            await update.message.reply_text("❌ No webhook URL configured. Set WEBHOOK_URL env var first.")
 
     async def upload_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -555,24 +554,8 @@ class SecureImageBot:
         
         application.add_error_handler(self.error_handler)
         
-        webhook_url = os.environ.get("WEBHOOK_URL", "")
-        webhook_secret = os.environ.get("WEBHOOK_SECRET", secrets.token_hex(16))
-        
-        if webhook_url and webhook_url.startswith("https://"):
-            try:
-                application.run_webhook(
-                    listen="0.0.0.0",
-                    port=int(os.environ.get("PORT", 8080)),
-                    webhook_url=webhook_url,
-                    secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
-                )
-            except Exception as e:
-                logger.error(f"Webhook error: {e}, falling back to polling")
-                application.run_polling(allowed_updates=Update.ALL_TYPES)
-        else:
-            logger.info("Starting in polling mode")
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Starting bot in polling mode")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def main():
