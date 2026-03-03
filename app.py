@@ -45,7 +45,7 @@ class ImageStore:
         self._collection.create_index("expire_at", expireAfterSeconds=ttl_seconds)
         logger.info("MongoDB connected successfully")
 
-    def add(self, encrypted_data: bytes, preview_data: bytes, filename: str) -> str:
+    def add(self, encrypted_data: bytes, preview_data: bytes, filename: str, caption: Optional[str] = None) -> str:
         image_id = secrets.token_hex(8)
         expire_at = datetime.utcnow() + timedelta(seconds=self._ttl)
         self._collection.insert_one({
@@ -53,6 +53,7 @@ class ImageStore:
             "encrypted": encrypted_data,
             "preview": preview_data,
             "filename": filename,
+            "caption": caption,
             "created_at": datetime.utcnow(),
             "expire_at": expire_at,
         })
@@ -65,6 +66,7 @@ class ImageStore:
                 "encrypted": result["encrypted"],
                 "preview": result["preview"],
                 "filename": result["filename"],
+                "caption": result.get("caption"),
                 "created_at": result["created_at"].timestamp(),
             }
         return None
@@ -184,8 +186,10 @@ class SecureImageBot:
 👨‍💼 Admin Commands:
 /setchannel - Set target channel
 /setlogchannel - Set log channel
+/setwebhook <url> - Set webhook URL
 /upload - Upload an image to encrypt
 /list - List all stored images
+/health - Check bot health
 """ if is_admin else ""
         
         await update.message.reply_text(
@@ -257,6 +261,24 @@ class SecureImageBot:
         
         return ConversationHandler.END
 
+    async def set_webhook(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id not in self.admin_ids:
+            await update.message.reply_text("❌ Unauthorized. Admin only.")
+            return
+        
+        if not context.args:
+            await update.message.reply_text("Usage: /setwebhook <url>")
+            return
+        
+        webhook_url = context.args[0]
+        try:
+            await context.bot.set_webhook(url=webhook_url)
+            await update.message.reply_text(f"✅ Webhook set to: {webhook_url}")
+            await self.log(context, f"🔗 Webhook set to: {webhook_url}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
     async def upload_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         logger.info(f"Upload request from user {user_id}, admins: {self.admin_ids}")
@@ -290,8 +312,14 @@ class SecureImageBot:
             preview = create_preview(bytes(image_bytes))
             filename = f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
             
+            custom_caption = None
+            if update.message.caption:
+                custom_caption = update.message.caption.strip()
+            elif context.args and len(context.args) > 0:
+                custom_caption = " ".join(context.args)
+            
             await status_msg.edit_text("💾 Storing image...")
-            image_id = self.store.add(encrypted, preview, filename)
+            image_id = self.store.add(encrypted, preview, filename, custom_caption)
             logger.info(f"Stored image with ID: {image_id}")
             
             keyboard = [
@@ -304,13 +332,16 @@ class SecureImageBot:
             
             await status_msg.edit_text("📤 Sending to channel...")
             bot_username = context.bot.username
+            
+            caption_text = f"🖼️ Secure Image\n"
+            if custom_caption:
+                caption_text += f"\n{custom_caption}\n"
+            caption_text += f"ID: `{image_id}`\n\n🔒 Tap 'Get Original' to view\n⚠️ You must start @{bot_username} first!"
+            
             sent_msg = await context.bot.send_photo(
                 chat_id=self.channel_id,
                 photo=preview,
-                caption=f"🖼️ Secure Image\n"
-                        f"ID: `{image_id}`\n\n"
-                        f"🔒 Tap 'Get Original' to view\n"
-                        f"⚠️ You must start @{bot_username} first!",
+                caption=caption_text,
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
@@ -322,13 +353,22 @@ class SecureImageBot:
                 f"Message ID: {sent_msg.message_id}",
                 parse_mode="Markdown"
             )
-             
+            
+            await self.log(
+                context,
+                f"📤 New image uploaded\n"
+                f"ID: `{image_id}`\n"
+                f"File: {filename}\n"
+                f"Caption: {custom_caption or 'None'}"
+            )
+              
         except Exception as e:
             logger.error(f"Error processing image: {e}", exc_info=True)
+            await self.log(context, f"❌ Upload error: {str(e)}")
             try:
-                await status_msg.edit_text(f"❌ Error: {str(e)}")
+                await status_msg.edit_text("❌ Error uploading image. Check log channel.")
             except:
-                await update.message.reply_text(f"❌ Error: {str(e)}")
+                pass
               
     async def get_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE, image_id: Optional[str] = None):
         if not image_id and update.message:
@@ -367,12 +407,15 @@ class SecureImageBot:
                     caption=f"📷 {data['filename']}\n⏰ Expires in 1 hour",
                     reply_markup=reply_markup,
                 )
-                
+                 
         except Exception as e:
             logger.error(f"Error decrypting: {e}")
             msg = "❌ Error decrypting image."
             if update.message:
                 await update.message.reply_text(msg)
+
+    async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("✅ Bot is running!")
 
     async def list_images(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         images = self.store.list_all()
@@ -423,10 +466,11 @@ class SecureImageBot:
             try:
                 decrypted = self.encryptor.decrypt(data["encrypted"])
                 try:
+                    caption = data.get("caption") or data["filename"]
                     sent_msg = await context.bot.send_photo(
                         chat_id=user_id,
                         photo=io.BytesIO(decrypted),
-                        caption=f"📷 {data['filename']}\n\n🔒 Auto-delete in 60 minutes"
+                        caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 minutes"
                     )
                     
                     async def delete_later():
@@ -445,15 +489,11 @@ class SecureImageBot:
                     )
                 except Exception as bot_error:
                     logger.error(f"DM send failed: {bot_error}")
-                    await query.message.reply_text(
-                        "❌ Cannot send DM. Please:\n"
-                        "1. Start the bot: /start\n"
-                        "2. Then press 'Get Original' again"
-                    )
                     await self.log(
                         context,
-                        f"❌ Failed to send to {user_name} {user_username}\n"
-                        f"Error: {str(bot_error)}"
+                        f"❌ DM failed for {user_name} {user_username}\n"
+                        f"User may have blocked bot or not started it\n"
+                        f"Error: {str(bot_error)[:100]}"
                     )
             except Exception as e:
                 logger.error(f"Error sending image to user: {e}")
@@ -506,6 +546,8 @@ class SecureImageBot:
         application.add_handler(CommandHandler("upload", self.upload_image))
         application.add_handler(CommandHandler("get", self.get_image))
         application.add_handler(CommandHandler("list", self.list_images))
+        application.add_handler(CommandHandler("health", self.health_check))
+        application.add_handler(CommandHandler("setwebhook", self.set_webhook))
         
         application.add_handler(MessageHandler(filters.PHOTO, self.upload_image))
         
@@ -513,7 +555,16 @@ class SecureImageBot:
         
         application.add_error_handler(self.error_handler)
         
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        webhook_url = os.environ.get("WEBHOOK_URL", "")
+        if webhook_url:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=int(os.environ.get("PORT", 8080)),
+                webhook_url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+            )
+        else:
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def main():

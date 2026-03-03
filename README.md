@@ -75,38 +75,22 @@ A Telegram bot that encrypts images sent by admin, stores them briefly (ephemera
 | `CHANNEL_ID` | Yes | Target channel ID (e.g., -1001234567890) |
 | `LOG_CHANNEL_ID` | No | Admin log channel ID |
 | `MONGO_URI` | Yes | MongoDB connection string |
+| `WEBHOOK_URL` | No | Webhook URL (for Koyeb) |
 | `ENCRYPTION_KEY` | No | 64-char hex or base64 key (auto-generated if not set) |
 
-## How It Works
+## Usage
 
-1. **Admin uploads image** → Bot encrypts with AES-256-GCM → Stores encrypted data in memory
-2. **Bot sends blurred preview** to channel with unique image ID
-3. **User requests image** via `/get <id>` → Bot decrypts and sends original
-4. **After 1 hour** → Image automatically deleted from memory
+### Admin Commands
 
-## Local Development
+1. **Register as admin**: Send `/start admin_<your_user_id>` to the bot
+2. **Set channel**: `/setchannel` then send channel ID
+3. **Set log channel**: `/setlogchannel` then send channel ID
+4. **Upload image**: Send photo with caption (caption will be shown with image)
+5. **List images**: `/list`
 
-```bash
-# Clone and setup
-pip install -r requirements.txt
+### User Commands
 
-# Run locally
-export BOT_TOKEN="your_token"
-export ADMIN_IDS="123456789"
-export CHANNEL_ID="-1001234567890"
-python app.py
-```
-
-## Docker Build
-
-```bash
-docker build -t secure-image-bot .
-docker run -e BOT_TOKEN="..." -e ADMIN_IDS="..." -e CHANNEL_ID="..." secure-image-bot
-```
-
-## Security Notes
-
-- Encryption key is auto-generated if not provided
-- Images stored only in memory (lost on restart/timeout)
-- 1-hour TTL on all stored images
-- No logs of decrypted image content
+- `/start` - Start the bot
+- `/help` - Show help
+- `/get <image_id>` - Get decrypted image
+- `/list` - List available images
