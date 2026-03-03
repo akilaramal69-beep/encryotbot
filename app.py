@@ -43,12 +43,11 @@ class ImageStore:
         self._client = MongoClient(connection_string)
         self._db = self._client['secure_image_bot']
         self._collection = self._db['images']
-        self._collection.create_index("expire_at", expireAfterSeconds=ttl_seconds)
+        self._collection.create_index("_id")
         logger.info("MongoDB connected successfully")
 
     def add(self, encrypted_data: bytes, preview_data: bytes, filename: str, caption: Optional[str] = None) -> str:
         image_id = secrets.token_hex(8)
-        expire_at = datetime.utcnow() + timedelta(seconds=self._ttl)
         self._collection.insert_one({
             "_id": image_id,
             "encrypted": encrypted_data,
@@ -56,7 +55,6 @@ class ImageStore:
             "filename": filename,
             "caption": caption,
             "created_at": datetime.utcnow(),
-            "expire_at": expire_at,
         })
         return image_id
 
@@ -111,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
