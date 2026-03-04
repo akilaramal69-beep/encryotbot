@@ -162,6 +162,7 @@ class SecureImageBot:
         self.rate_limit_enabled = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
         self.rate_limit_count = int(os.environ.get("RATE_LIMIT_COUNT", "10"))
         self.rate_limit_window = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))
+        self.auto_delete_seconds = int(os.environ.get("AUTO_DELETE_SECONDS", "60"))
         
         self._users_collection = self.store._db['users']
         self._users_collection.create_index("username")
@@ -575,7 +576,7 @@ class SecureImageBot:
             caption = data.get("caption") or data["filename"]
             
             is_privileged = user_id in self.admin_ids or user_id in self.privileged_ids
-            auto_delete_caption = "🔒 Auto-delete in 60s" if not is_privileged else "🔓 No auto-delete"
+            auto_delete_caption = f"🔒 Auto-delete in {self.auto_delete_seconds}s" if not is_privileged else "🔓 No auto-delete"
             
             sent_msg = await context.bot.send_photo(
                 chat_id=update.effective_user.id,
@@ -589,26 +590,28 @@ class SecureImageBot:
                 chat_id = update.effective_user.id
                 caption_text = caption
                 
+                halfway = self.auto_delete_seconds // 2
+                
                 async def update_countdown():
                     try:
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(halfway)
                         await context.bot.edit_message_caption(
                             chat_id=chat_id,
                             message_id=message_id,
-                            caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
+                            caption=f"📷 {caption_text}\n\n🔒 Auto-delete in {self.auto_delete_seconds - halfway}s"
                         )
                     except Exception as e:
                         logger.error(f"Countdown update failed: {e}")
                 
-                async def delete_after_60():
+                async def delete_after():
                     try:
-                        await asyncio.sleep(60)
+                        await asyncio.sleep(self.auto_delete_seconds)
                         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
                     except Exception as e:
                         logger.error(f"Delete failed: {e}")
                 
                 asyncio.create_task(update_countdown())
-                asyncio.create_task(delete_after_60())
+                asyncio.create_task(delete_after())
             
             await self.log(context, 
                 f"✅ Image sent via /get\n"
@@ -718,7 +721,7 @@ class SecureImageBot:
                 caption = image_data.get("caption") or image_data["filename"]
                 
                 is_privileged = user_id in self.admin_ids or user_id in self.privileged_ids
-                auto_delete_caption = "🔒 Auto-delete in 60s" if not is_privileged else "🔓 No auto-delete"
+                auto_delete_caption = f"🔒 Auto-delete in {self.auto_delete_seconds}s" if not is_privileged else "🔓 No auto-delete"
                 
                 sent_msg = await context.bot.send_photo(
                     chat_id=user_id,
@@ -732,27 +735,29 @@ class SecureImageBot:
                     chat_id = user_id
                     caption_text = caption
                     
+                    halfway = self.auto_delete_seconds // 2
+                    
                     async def update_countdown():
                         try:
-                            await asyncio.sleep(30)
+                            await asyncio.sleep(halfway)
                             await context.bot.edit_message_caption(
                                 chat_id=chat_id,
                                 message_id=message_id,
-                                caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
+                                caption=f"📷 {caption_text}\n\n🔒 Auto-delete in {self.auto_delete_seconds - halfway}s"
                             )
                         except Exception as e:
                             logger.error(f"Countdown update failed: {e}")
                     
-                    async def delete_after_60():
+                    async def delete_after():
                         try:
-                            await asyncio.sleep(60)
+                            await asyncio.sleep(self.auto_delete_seconds)
                             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
                         except Exception as e:
                             if "Message to delete not found" not in str(e):
                                 logger.error(f"Delete failed: {e}")
                     
                     asyncio.create_task(update_countdown())
-                    asyncio.create_task(delete_after_60())
+                    asyncio.create_task(delete_after())
                 
                 await self.log(context, 
                     f"✅ Image sent\n"

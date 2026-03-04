@@ -48,6 +48,7 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 | `RATE_LIMIT_ENABLED` | No | `true`/`false` - enable rate limiting |
 | `RATE_LIMIT_COUNT` | No | Images per hour (default 10) |
 | `RATE_LIMIT_WINDOW` | No | Time window in seconds (default 3600) |
+| `AUTO_DELETE_SECONDS` | No | Time before image is deleted (default 60) |
 | `PURGE_ON_START` | No | Set `true` to purge all images on deploy |
 | `PORT` | No | Port for health check (default 8080) |
 
