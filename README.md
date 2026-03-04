@@ -40,10 +40,14 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token |
 | `ADMIN_IDS` | Yes | Comma-separated admin user IDs |
+| `PRIVILEGED_IDS` | No | Comma-separated privileged user IDs (unlimited downloads) |
 | `CHANNEL_ID` | Yes | Target channel ID (e.g., -1001234567890) |
 | `LOG_CHANNEL_ID` | No | Admin log channel ID |
 | `MONGO_URI` | Yes | MongoDB connection string |
 | `PROTECT_CONTENT` | No | `true`/`false` - prevents saving/forwarding |
+| `RATE_LIMIT_ENABLED` | No | `true`/`false` - enable rate limiting |
+| `RATE_LIMIT_COUNT` | No | Images per hour (default 10) |
+| `RATE_LIMIT_WINDOW` | No | Time window in seconds (default 3600) |
 | `PURGE_ON_START` | No | Set `true` to purge all images on deploy |
 | `PORT` | No | Port for health check (default 8080) |
 

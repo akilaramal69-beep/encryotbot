@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -148,11 +148,42 @@ class SecureImageBot:
             logger.info(f"Auto-purged {purged} images on startup")
         
         self.admin_ids = set(int(x.strip()) for x in admin_ids_str.split(",") if x.strip())
+        
+        privileged_ids_str = os.environ.get("PRIVILEGED_IDS", "")
+        self.privileged_ids = set(int(x.strip()) for x in privileged_ids_str.split(",") if x.strip())
+        
         self.channel_id = os.environ.get("CHANNEL_ID", "")
         self.log_channel_id = os.environ.get("LOG_CHANNEL_ID", "")
+        self.rate_limit_enabled = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
+        self.rate_limit_count = int(os.environ.get("RATE_LIMIT_COUNT", "10"))
+        self.rate_limit_window = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))
         
         self._users_collection = self.store._db['users']
+        self._rate_collection = self.store._db['rate_limits']
         self._app: Optional[Application] = None
+
+    def check_rate_limit(self, user_id: int) -> tuple:
+        if user_id in self.admin_ids or user_id in self.privileged_ids:
+            return True, None
+        
+        now = datetime.utcnow()
+        window_start = now - timedelta(seconds=self.rate_limit_window)
+        
+        count = self._rate_collection.count_documents({
+            "user_id": user_id,
+            "timestamp": {"$gte": window_start}
+        })
+        
+        if count >= self.rate_limit_count:
+            remaining = self.rate_limit_count - count
+            return False, f"Rate limit reached. Try again later. ({self.rate_limit_count}/hour)"
+        
+        self._rate_collection.insert_one({
+            "user_id": user_id,
+            "timestamp": now
+        })
+        
+        return True, None
 
     async def track_user(self, user_id: int, username: str, first_name: str):
         try:
@@ -351,6 +382,14 @@ class SecureImageBot:
         if not image_id:
             return
         
+        user_id = update.effective_user.id
+        
+        if self.rate_limit_enabled and user_id not in self.admin_ids:
+            allowed, error_msg = self.check_rate_limit(user_id)
+            if not allowed:
+                await update.message.reply_text(f"❌ {error_msg}")
+                return
+        
         image_id = image_id.strip()
         data = self.store.get(image_id)
         
@@ -430,7 +469,8 @@ class SecureImageBot:
             f"📊 Bot Statistics\n\n"
             f"👥 Total Users: {stats['total_users']}\n"
             f"🖼️ Total Images: {image_count}\n"
-            f"🔒 Protect Content: {self.protect_content}"
+            f"🔒 Protect Content: {self.protect_content}\n"
+            f"⚡ Rate Limit: {self.rate_limit_count}/hour (Enabled: {self.rate_limit_enabled})"
         )
 
     async def list_images(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -473,6 +513,12 @@ class SecureImageBot:
             if not member or member.status in ['left', 'kicked']:
                 await self.log(context, f"⚠️ User {user_name} {user_username} not in channel")
                 return
+            
+            if self.rate_limit_enabled and user_id not in self.admin_ids:
+                allowed, error_msg = self.check_rate_limit(user_id)
+                if not allowed:
+                    await query.answer(error_msg, show_alert=True)
+                    return
             
             image_data = self.store.get(image_id)
             if not image_data:
