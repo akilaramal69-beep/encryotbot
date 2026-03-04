@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 9
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -163,34 +163,50 @@ class SecureImageBot:
         self._app: Optional[Application] = None
 
     def check_rate_limit(self, user_id: int) -> tuple:
-        if user_id in self.admin_ids or user_id in self.privileged_ids:
+        try:
+            if user_id in self.admin_ids:
+                logger.info(f"User {user_id} is admin - bypass rate limit")
+                return True, None, 0
+            
+            if user_id in self.privileged_ids:
+                logger.info(f"User {user_id} is privileged - bypass rate limit")
+                return True, None, 0
+            
+            if not self.rate_limit_enabled:
+                return True, None, 0
+            
+            now = datetime.utcnow()
+            window_start = now - timedelta(seconds=self.rate_limit_window)
+            
+            count = self._rate_collection.count_documents({
+                "user_id": user_id,
+                "timestamp": {"$gte": window_start}
+            })
+            
+            logger.info(f"Rate limit check for user {user_id}: count={count}, limit={self.rate_limit_count}")
+            
+            if count >= self.rate_limit_count:
+                oldest = self._rate_collection.find_one(
+                    {"user_id": user_id},
+                    sort=[("timestamp", 1)]
+                )
+                if oldest:
+                    reset_time = oldest["timestamp"] + timedelta(seconds=self.rate_limit_window)
+                    remaining_seconds = int((reset_time - now).total_seconds())
+                    if remaining_seconds < 0:
+                        remaining_seconds = 0
+                    return False, f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds", remaining_seconds
+                return False, "⚠️ Download limit reached. Try again later.", 0
+            
+            self._rate_collection.insert_one({
+                "user_id": user_id,
+                "timestamp": now
+            })
+            
             return True, None, 0
-        
-        now = datetime.utcnow()
-        window_start = now - timedelta(seconds=self.rate_limit_window)
-        
-        count = self._rate_collection.count_documents({
-            "user_id": user_id,
-            "timestamp": {"$gte": window_start}
-        })
-        
-        if count >= self.rate_limit_count:
-            oldest = self._rate_collection.find_one(
-                {"user_id": user_id},
-                sort=[("timestamp", 1)]
-            )
-            if oldest:
-                reset_time = oldest["timestamp"] + timedelta(seconds=self.rate_limit_window)
-                remaining_seconds = int((reset_time - now).total_seconds())
-                return False, f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds", remaining_seconds
-            return False, "⚠️ Download limit reached. Try again later.", 0
-        
-        self._rate_collection.insert_one({
-            "user_id": user_id,
-            "timestamp": now
-        })
-        
-        return True, None, 0
+        except Exception as e:
+            logger.error(f"Rate limit check failed: {e}")
+            return True, None, 0
 
     async def track_user(self, user_id: int, username: str, first_name: str):
         try:
