@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -151,7 +151,25 @@ class SecureImageBot:
         self.channel_id = os.environ.get("CHANNEL_ID", "")
         self.log_channel_id = os.environ.get("LOG_CHANNEL_ID", "")
         
+        self._users_collection = self.store._db['users']
         self._app: Optional[Application] = None
+
+    async def track_user(self, user_id: int, username: str, first_name: str):
+        try:
+            self._users_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"username": username, "first_name": first_name, "last_active": datetime.utcnow()}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to track user: {e}")
+
+    async def get_stats(self) -> dict:
+        try:
+            total_users = self._users_collection.count_documents({})
+            return {"total_users": total_users}
+        except:
+            return {"total_users": 0}
 
     async def log(self, context: ContextTypes.DEFAULT_TYPE, message: str):
         if self.log_channel_id:
@@ -166,6 +184,9 @@ class SecureImageBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         args = context.args
+        user = update.effective_user
+        
+        await self.track_user(user_id, user.username or "", user.first_name or "")
         
         if args:
             if args[0] == f"admin_{user_id}":
@@ -193,6 +214,7 @@ class SecureImageBot:
                 "/upload - Upload image (send photo)\n"
                 "/list - List images\n"
                 "/health - Check health\n"
+                "/stats - View statistics\n"
                 "/purge - Delete all images\n\n"
                 "To upload: send photo with caption"
             )
@@ -372,7 +394,12 @@ class SecureImageBot:
             asyncio.create_task(update_countdown())
             asyncio.create_task(delete_after_60())
             
-            await self.log(context, f"✅ Image sent: {image_id}")
+            await self.log(context, 
+                f"✅ Image sent via /get\n"
+                f"User ID: {update.effective_user.id}\n"
+                f"Image ID: `{image_id}`\n"
+                f"File: {data['filename']}"
+            )
             
         except Exception as e:
             logger.error(f"Error decrypting: {e}")
@@ -389,6 +416,22 @@ class SecureImageBot:
 
     async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Bot is running!")
+
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id not in self.admin_ids:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+        
+        stats = await self.get_stats()
+        image_count = len(self.store.list_all())
+        
+        await update.message.reply_text(
+            f"📊 Bot Statistics\n\n"
+            f"👥 Total Users: {stats['total_users']}\n"
+            f"🖼️ Total Images: {image_count}\n"
+            f"🔒 Protect Content: {self.protect_content}"
+        )
 
     async def list_images(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         images = self.store.list_all()
@@ -472,7 +515,13 @@ class SecureImageBot:
                 asyncio.create_task(update_countdown())
                 asyncio.create_task(delete_after_60())
                 
-                await self.log(context, f"✅ Image sent to {user_name} {user_username}")
+                await self.log(context, 
+                    f"✅ Image sent\n"
+                    f"User: {user_name} {user_username}\n"
+                    f"ID: {user_id}\n"
+                    f"Image ID: `{image_id}`\n"
+                    f"File: {image_data['filename']}"
+                )
             except Exception as e:
                 logger.error(f"Error sending image: {e}")
                 await query.answer("❌ Cannot send image", show_alert=True)
@@ -521,6 +570,7 @@ class SecureImageBot:
         application.add_handler(CommandHandler("get", self.get_image))
         application.add_handler(CommandHandler("list", self.list_images))
         application.add_handler(CommandHandler("health", self.health_check))
+        application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("purge", self.purge_data))
         
         application.add_handler(MessageHandler(filters.PHOTO, self.upload_image))
