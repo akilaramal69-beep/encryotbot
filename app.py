@@ -164,7 +164,7 @@ class SecureImageBot:
 
     def check_rate_limit(self, user_id: int) -> tuple:
         if user_id in self.admin_ids or user_id in self.privileged_ids:
-            return True, None
+            return True, None, 0
         
         now = datetime.utcnow()
         window_start = now - timedelta(seconds=self.rate_limit_window)
@@ -175,15 +175,22 @@ class SecureImageBot:
         })
         
         if count >= self.rate_limit_count:
-            remaining = self.rate_limit_count - count
-            return False, f"Rate limit reached. Try again later. ({self.rate_limit_count}/hour)"
+            oldest = self._rate_collection.find_one(
+                {"user_id": user_id},
+                sort=[("timestamp", 1)]
+            )
+            if oldest:
+                reset_time = oldest["timestamp"] + timedelta(seconds=self.rate_limit_window)
+                remaining_seconds = int((reset_time - now).total_seconds())
+                return False, f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds", remaining_seconds
+            return False, "⚠️ Download limit reached. Try again later.", 0
         
         self._rate_collection.insert_one({
             "user_id": user_id,
             "timestamp": now
         })
         
-        return True, None
+        return True, None, 0
 
     async def track_user(self, user_id: int, username: str, first_name: str):
         try:
@@ -384,10 +391,34 @@ class SecureImageBot:
         
         user_id = update.effective_user.id
         
-        if self.rate_limit_enabled and user_id not in self.admin_ids:
-            allowed, error_msg = self.check_rate_limit(user_id)
+        if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
+            allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
             if not allowed:
-                await update.message.reply_text(f"❌ {error_msg}")
+                if remaining_secs > 0:
+                    status_msg = await update.message.reply_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Calculating...")
+                    
+                    async def send_countdown():
+                        secs = remaining_secs
+                        while secs > 0:
+                            await asyncio.sleep(min(10, secs))
+                            secs -= min(10, secs)
+                            try:
+                                minutes = secs // 60
+                                seconds = secs % 60
+                                if minutes > 0:
+                                    await status_msg.edit_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Next download in: {minutes}m {seconds}s")
+                                else:
+                                    await status_msg.edit_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Next download in: {secs}s")
+                            except:
+                                break
+                        try:
+                            await status_msg.edit_text("✅ You can now download images!")
+                        except:
+                            pass
+                    
+                    asyncio.create_task(send_countdown())
+                else:
+                    await update.message.reply_text(f"❌ {error_msg}")
                 return
         
         image_id = image_id.strip()
@@ -514,10 +545,13 @@ class SecureImageBot:
                 await self.log(context, f"⚠️ User {user_name} {user_username} not in channel")
                 return
             
-            if self.rate_limit_enabled and user_id not in self.admin_ids:
-                allowed, error_msg = self.check_rate_limit(user_id)
+            if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
+                allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
                 if not allowed:
-                    await query.answer(error_msg, show_alert=True)
+                    if remaining_secs > 0:
+                        await query.answer(f"⚠️ Limit reached! Try again in {remaining_secs}s", show_alert=True)
+                    else:
+                        await query.answer(error_msg, show_alert=True)
                     return
             
             image_data = self.store.get(image_id)
