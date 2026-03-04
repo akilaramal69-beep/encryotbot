@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -342,7 +342,7 @@ class SecureImageBot:
             await context.bot.send_photo(
                 chat_id=update.effective_user.id,
                 photo=io.BytesIO(decrypted),
-                caption=f"📷 {caption}\n\n🔒 Auto-delete in 30 seconds",
+                caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 seconds",
                 protect_content=True
             )
             
@@ -410,32 +410,6 @@ class SecureImageBot:
                 await self.log(context, f"⚠️ Image not found: {image_id}")
                 return
             
-            caption = image_data.get("caption") or image_data["filename"]
-            view_keyboard = [
-                [InlineKeyboardButton("👁️ View Image", callback_data=f"view_{image_id}")]
-            ]
-            view_reply_markup = InlineKeyboardMarkup(view_keyboard)
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"📷 {caption}\n\n👁️ Tap to view (auto-delete in 30 seconds)",
-                    reply_markup=view_reply_markup,
-                    protect_content=True
-                )
-                await self.log(context, f"✅ Image view prompt sent to {user_name} {user_username}")
-            except Exception as e:
-                logger.error(f"Failed to send view prompt: {e}")
-                await query.answer("❌ Cannot send. Start bot first!", show_alert=True)
-        
-        elif callback_data.startswith("view_"):
-            image_id = callback_data[4:]
-            
-            image_data = self.store.get(image_id)
-            if not image_data:
-                await query.answer("❌ Image not found", show_alert=True)
-                return
-            
             try:
                 decrypted = self.encryptor.decrypt(image_data["encrypted"])
                 caption = image_data.get("caption") or image_data["filename"]
@@ -443,12 +417,12 @@ class SecureImageBot:
                 sent_msg = await context.bot.send_photo(
                     chat_id=user_id,
                     photo=io.BytesIO(decrypted),
-                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 30 seconds",
+                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 seconds",
                     protect_content=True
                 )
                 
                 async def delete_later():
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(60)
                     try:
                         await context.bot.delete_message(chat_id=user_id, message_id=sent_msg.message_id)
                     except:
@@ -456,10 +430,10 @@ class SecureImageBot:
                 
                 asyncio.create_task(delete_later())
                 
-                await self.log(context, f"✅ Image sent and will delete in 30s")
+                await self.log(context, f"✅ Image sent to {user_name} {user_username}")
             except Exception as e:
                 logger.error(f"Error sending image: {e}")
-                await query.answer("❌ Error loading image", show_alert=True)
+                await query.answer("❌ Cannot send image", show_alert=True)
         
         elif callback_data.startswith("del_"):
             image_id = callback_data[4:]
