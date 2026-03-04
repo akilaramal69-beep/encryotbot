@@ -188,7 +188,8 @@ class SecureImageBot:
                 "timestamp": {"$gte": window_start}
             })
             
-            logger.info(f"Rate limit check for user {user_id}: count={count}, limit={self.rate_limit_count}")
+            remaining = self.rate_limit_count - count
+            logger.info(f"Rate limit check for user {user_id}: used={count}/{self.rate_limit_count}, remaining={remaining}")
             
             if count >= self.rate_limit_count:
                 oldest = self._rate_collection.find_one(
@@ -200,7 +201,7 @@ class SecureImageBot:
                     remaining_seconds = int((reset_time - now).total_seconds())
                     if remaining_seconds < 0:
                         remaining_seconds = 0
-                    error_msg = f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds"
+                    error_msg = f"⚠️ Download limit reached!\n\nYou have used {count} downloads this hour.\nTry again in {remaining_seconds} seconds."
                     logger.info(f"Rate limit HIT for user {user_id}, remaining={remaining_seconds}s")
                     return False, error_msg, remaining_seconds
                 error_msg = "⚠️ Download limit reached. Try again later."
@@ -212,7 +213,8 @@ class SecureImageBot:
                 "timestamp": now
             })
             
-            return True, None, 0
+            logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining-1}")
+            return True, f"Downloaded! Remaining: {remaining-1}/{self.rate_limit_count}", 0
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
             return True, None, 0
