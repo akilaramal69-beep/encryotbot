@@ -271,100 +271,58 @@ class SecureImageBot:
             if not self.rate_limit_enabled:
                 return True, None, 0, 0
             
+            from pymongo import ReturnDocument
             now = datetime.utcnow()
             
-            # Use atomic find_one_and_update with return_document=AFTER if possible, 
-            # but because our logic depends on knowing the previous state to decide whether
-            # to reset or increment, let's read first, then atomically update if valid.
-            # To avoid race conditions completely, we use upsert with $inc if not expired.
+            doc = self._rate_collection.find_one({"user_id": user_id})
             
-            # Step 1: Read current state
-            user_doc = self._rate_collection.find_one({"user_id": user_id})
+            if not doc:
+                self._rate_collection.insert_one({
+                    "user_id": user_id,
+                    "first_download": now,
+                    "count": 1
+                })
+                logger.info(f"Rate limit: First download for user {user_id}")
+                return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
             
-            if user_doc:
-                first_download = user_doc.get("first_download")
-                # Handle corrupted docs just in case
-                if not first_download:
-                    first_download = now
-                    
-                elapsed = (now - first_download).total_seconds()
-                
-                # Case A: Window has expired. We fully reset the user.
-                if elapsed >= self.rate_limit_window:
-                    self._rate_collection.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"first_download": now, "count": 1}}
-                    )
-                    logger.info(f"Rate limit window reset for user {user_id}")
-                    return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
-                
-                # Case B: Within window. Atomically increment ONLY if current count < limit.
-                # We use finding the document with the specific first_download to avoid racing a reset.
-                update_result = self._rate_collection.update_one(
-                    {
-                        "user_id": user_id, 
-                        "first_download": first_download, # ensure we are updating the exact same window
-                        "count": {"$lt": self.rate_limit_count} # only increment if under limit
-                    },
-                    {"$inc": {"count": 1}}
+            first_download = doc.get("first_download", now)
+            elapsed = (now - first_download).total_seconds()
+            
+            if elapsed >= self.rate_limit_window:
+                self._rate_collection.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"first_download": now, "count": 1}}
                 )
+                logger.info(f"Rate limit window reset for user {user_id}")
+                return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
+            
+            current_count = doc.get("count", 0)
+            if current_count >= self.rate_limit_count:
+                reset_in = max(0, int(self.rate_limit_window - elapsed))
+                error_msg = f"⚠️ Download limit reached!\n\nYou have used {current_count} downloads.\nTry again in {reset_in} seconds."
+                logger.info(f"Rate limit HIT for user {user_id}, reset_in={reset_in}s")
+                return False, error_msg, reset_in, current_count
                 
-                # If update_result.modified_count == 1, it successfully incremented within limits.
-                if update_result.modified_count > 0:
-                    # In order to know exactly how many they've used without doing a read AFTER $inc,
-                    # we just add 1 to the count we read originally if it's the same window.
-                    # Or we fetch the updated doc. A fetch is safer.
-                    new_doc = self._rate_collection.find_one({"user_id": user_id})
-                    new_count = new_doc.get("count", 1) if new_doc else 1
-                    remaining = self.rate_limit_count - new_count
-                    logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining}")
-                    return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0, new_count
-                else:
-                    # The update failed. Either the window reset (handled by while loop or next request),
-                    # or the count is already >= limit. Let's assume limit reached.
-                    current_doc = self._rate_collection.find_one({"user_id": user_id})
-                    if current_doc and current_doc.get("count", 0) >= self.rate_limit_count:
-                        # Re-calculate elapsed in case of slight delay
-                        real_elapsed = (now - current_doc.get("first_download", now)).total_seconds()
-                        reset_in = max(0, int(self.rate_limit_window - real_elapsed))
-                        dl_count = current_doc.get("count", self.rate_limit_count)
-                        
-                        error_msg = f"⚠️ Download limit reached!\n\nYou have used {dl_count} downloads.\nTry again in {reset_in} seconds."
-                        logger.info(f"Rate limit HIT for user {user_id}, reset_in={reset_in}s")
-                        return False, error_msg, reset_in, dl_count
-                    
-            # Set 2: Document doesn't exist (first time). Atomically upsert it.
-            # Use upsert with $setOnInsert to prevent racing other first-time requests
-            result = self._rate_collection.update_one(
-                {"user_id": user_id},
+            updated_doc = self._rate_collection.find_one_and_update(
                 {
-                    "$setOnInsert": {"first_download": now, "count": 1}
+                    "user_id": user_id,
+                    "count": {"$lt": self.rate_limit_count}
                 },
-                upsert=True
+                {"$inc": {"count": 1}},
+                return_document=ReturnDocument.AFTER
             )
             
-            # If it was actually inserted, modified_count = 0, matched_count = 0, upserted_id exists
-            if result.upserted_id is not None:
-                logger.info(f"Rate limit: First download for user {user_id}, remaining: {self.rate_limit_count-1}")
-                return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
+            if updated_doc:
+                new_count = updated_doc.get("count", 1)
+                remaining = self.rate_limit_count - new_count
+                logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining}")
+                return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0, new_count
             else:
-                # Wow, a race condition occurred between find_one and update_one!
-                # Another process inserted the doc first. We should just increment it cleanly.
-                self._rate_collection.update_one(
-                    {"user_id": user_id, "count": {"$lt": self.rate_limit_count}},
-                    {"$inc": {"count": 1}}
-                )
+                reset_in = max(0, int(self.rate_limit_window - elapsed))
+                error_msg = f"⚠️ Download limit reached!\n\nYou have used {self.rate_limit_count} downloads.\nTry again in {reset_in} seconds."
+                logger.info(f"Rate limit HIT (concurrent) for user {user_id}")
+                return False, error_msg, reset_in, self.rate_limit_count
                 
-                # Fetch new state for UI
-                new_doc = self._rate_collection.find_one({"user_id": user_id})
-                new_count = new_doc.get("count", 1) if new_doc else 1
-                
-                if new_count <= self.rate_limit_count:
-                    remaining = self.rate_limit_count - new_count
-                    return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0, new_count
-                else:
-                    return False, "⚠️ Download limit reached!", int(self.rate_limit_window), self.rate_limit_count
-
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
             return True, None, 0, 0
