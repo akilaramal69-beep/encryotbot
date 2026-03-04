@@ -2,11 +2,9 @@ import os
 import io
 import asyncio
 import base64
-import uuid
 import hashlib
 import logging
 import secrets
-import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 from aiohttp import web
@@ -181,40 +179,47 @@ class SecureImageBot:
                 return True, None, 0
             
             now = datetime.utcnow()
-            window_start = now - timedelta(seconds=self.rate_limit_window)
             
-            count = self._rate_collection.count_documents({
-                "user_id": user_id,
-                "timestamp": {"$gte": window_start}
-            })
+            user_doc = self._rate_collection.find_one({"user_id": user_id})
             
-            remaining = self.rate_limit_count - count
-            logger.info(f"Rate limit check for user {user_id}: used={count}/{self.rate_limit_count}, remaining={remaining}")
-            
-            if count >= self.rate_limit_count:
-                oldest = self._rate_collection.find_one(
-                    {"user_id": user_id},
-                    sort=[("timestamp", 1)]
-                )
-                if oldest:
-                    reset_time = oldest["timestamp"] + timedelta(seconds=self.rate_limit_window)
-                    remaining_seconds = int((reset_time - now).total_seconds())
-                    if remaining_seconds < 0:
-                        remaining_seconds = 0
-                    error_msg = f"⚠️ Download limit reached!\n\nYou have used {count} downloads this hour.\nTry again in {remaining_seconds} seconds."
-                    logger.info(f"Rate limit HIT for user {user_id}, remaining={remaining_seconds}s")
-                    return False, error_msg, remaining_seconds
-                error_msg = "⚠️ Download limit reached. Try again later."
-                logger.info(f"Rate limit HIT for user {user_id}")
-                return False, error_msg, 0
+            if user_doc:
+                first_download = user_doc.get("first_download")
+                download_count = user_doc.get("count", 0)
+                
+                if first_download:
+                    elapsed = (now - first_download).total_seconds()
+                    
+                    if elapsed >= self.rate_limit_window:
+                        self._rate_collection.update_one(
+                            {"user_id": user_id},
+                            {"$set": {"first_download": now, "count": 1}}
+                        )
+                        logger.info(f"Rate limit window reset for user {user_id}")
+                        return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
+                    
+                    if download_count >= self.rate_limit_count:
+                        reset_in = int(self.rate_limit_window - elapsed)
+                        error_msg = f"⚠️ Download limit reached!\n\nYou have used {download_count} downloads.\nTry again in {reset_in} seconds."
+                        logger.info(f"Rate limit HIT for user {user_id}, reset_in={reset_in}s")
+                        return False, error_msg, reset_in
+                    
+                    new_count = download_count + 1
+                    self._rate_collection.update_one(
+                        {"user_id": user_id},
+                        {"$set": {"count": new_count}}
+                    )
+                    remaining = self.rate_limit_count - new_count
+                    logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining}")
+                    return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0
             
             self._rate_collection.insert_one({
                 "user_id": user_id,
-                "timestamp": now
+                "first_download": now,
+                "count": 1
             })
             
-            logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining-1}")
-            return True, f"Downloaded! Remaining: {remaining-1}/{self.rate_limit_count}", 0
+            logger.info(f"Rate limit: First download for user {user_id}, remaining: {self.rate_limit_count-1}")
+            return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
             return True, None, 0
