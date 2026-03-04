@@ -22,8 +22,8 @@ from telegram.ext import (
 )
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from pymongo import MongoClient
-from pymongo.errors import ServerSelectionTimeoutError
+from pymongo import MongoClient, ReturnDocument
+from pymongo.errors import ServerSelectionTimeoutError, DuplicateKeyError
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -46,6 +46,16 @@ class ImageStore:
     def purge_all(self) -> int:
         result = self._collection.delete_many({})
         logger.info(f"Purged {result.deleted_count} images from database")
+        return result.deleted_count
+
+    def purge_limits(self) -> int:
+        result = self._client['secure_image_bot']['rate_limits'].delete_many({})
+        logger.info(f"Purged {result.deleted_count} rate limit records from database")
+        return result.deleted_count
+
+    def purge_users(self) -> int:
+        result = self._client['secure_image_bot']['users'].delete_many({})
+        logger.info(f"Purged {result.deleted_count} user records from database")
         return result.deleted_count
 
     def add(self, encrypted_data: bytes, preview_data: bytes, filename: str, caption: Optional[str] = None) -> str:
@@ -151,6 +161,14 @@ class SecureImageBot:
         if os.environ.get("PURGE_ON_START", "").lower() == "true":
             purged = self.store.purge_all()
             logger.info(f"Auto-purged {purged} images on startup")
+        
+        if os.environ.get("PURGE_LIMITS_ON_START", "").lower() == "true":
+            purged = self.store.purge_limits()
+            logger.info(f"Auto-purged {purged} rate limit records on startup")
+            
+        if os.environ.get("PURGE_USERS_ON_START", "").lower() == "true":
+            purged = self.store.purge_users()
+            logger.info(f"Auto-purged {purged} user records on startup")
         
         self.admin_ids = set(int(x.strip()) for x in admin_ids_str.split(",") if x.strip())
         
@@ -271,19 +289,26 @@ class SecureImageBot:
             if not self.rate_limit_enabled:
                 return True, None, 0, 0
             
-            from pymongo import ReturnDocument
             now = datetime.utcnow()
             
             doc = self._rate_collection.find_one({"user_id": user_id})
             
             if not doc:
-                self._rate_collection.insert_one({
-                    "user_id": user_id,
-                    "first_download": now,
-                    "count": 1
-                })
-                logger.info(f"Rate limit: First download for user {user_id}")
-                return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
+                try:
+                    self._rate_collection.insert_one({
+                        "user_id": user_id,
+                        "first_download": now,
+                        "count": 1
+                    })
+                    logger.info(f"Rate limit: First download for user {user_id}")
+                    return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
+                except DuplicateKeyError:
+                    # Race condition: another thread inserted the doc between find_one and insert_one.
+                    # Fetch the document that was just inserted and continue.
+                    doc = self._rate_collection.find_one({"user_id": user_id})
+                    if not doc:
+                        logger.error(f"Critical error: DuplicateKeyError raised but doc not found for {user_id}")
+                        return True, None, 0, 0
             
             first_download = doc.get("first_download", now)
             elapsed = (now - first_download).total_seconds()
@@ -361,11 +386,8 @@ class SecureImageBot:
         
         await self.track_user(user_id, user.username or "", user.first_name or "")
         
-        if args:
-            if args[0] == f"admin_{user_id}":
-                self.admin_ids.add(user_id)
-                await update.message.reply_text("✅ You are now registered as admin!")
-                return
+        # Security: Removed admin auto-registration backdoor. 
+        # Admins must be set in the ADMIN_IDS environment variable for safety.
         
         await update.message.reply_text(
             f"🔒 Secure Image Bot\n\n"
@@ -598,9 +620,29 @@ class SecureImageBot:
         if user_id not in self.admin_ids:
             return
         
-        purged = self.store.purge_all()
-        await update.message.reply_text(f"✅ Purged {purged} images from database.")
-        await self.log(context, f"🗑️ Admin purged {purged} images")
+        target = " ".join(context.args).lower().strip()
+        
+        if not target or target == "images":
+            purged = self.store.purge_all()
+            msg = f"✅ Purged {purged} images from database."
+        elif target == "limits":
+            purged = self.store.purge_limits()
+            msg = f"✅ Purged {purged} rate limit records."
+        elif target == "users":
+            purged = self.store.purge_users()
+            msg = f"✅ Purged {purged} user records."
+        elif target == "all":
+            img_p = self.store.purge_all()
+            lim_p = self.store.purge_limits()
+            usr_p = self.store.purge_users()
+            purged = img_p + lim_p + usr_p
+            msg = f"✅ Total Purge Complete: {img_p} images, {lim_p} limits, {usr_p} users wiped."
+        else:
+            await update.message.reply_text("❓ Usage: `/purge [images|limits|users|all]`")
+            return
+
+        await update.message.reply_text(msg)
+        await self.log(context, f"🗑️ Admin purged {target or 'images'}: {msg}")
 
     async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Bot is running!")
@@ -805,9 +847,10 @@ class SecureImageBot:
             
             runner = web.AppRunner(health_app)
             await runner.setup()
-            site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+            port = int(os.environ.get("PORT", 8080))
+            site = web.TCPSite(runner, '0.0.0.0', port)
             await site.start()
-            logger.info("Health server started on port 8080")
+            logger.info(f"Health server started on port {port}")
             
             await application.updater.start_polling()
             logger.info("Bot polling started")

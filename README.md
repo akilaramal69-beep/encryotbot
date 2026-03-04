@@ -7,11 +7,11 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 - AES-256-GCM encryption for images
 - Pixelated preview in channel
 - Download protection (configurable via env)
-- Dynamic countdown timer (60s → 1s)
-- Auto-delete after 60 seconds
+- Dynamic countdown timer (configurable via env)
+- Auto-delete after X seconds (configurable via env)
 - MongoDB storage (permanent)
 - Health check endpoint for Koyeb
-- Auto-purge on deployment option
+- Auto-purge options on deployment (images, limits, users)
 - Admin log channel
 
 ## Setup
@@ -40,6 +40,7 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token |
 | `ADMIN_IDS` | Yes | Comma-separated admin user IDs |
+| `ENCRYPTION_KEY` | No | 32-byte key for AES-256-GCM (auto-generated if missing) |
 | `PRIVILEGED_IDS` | No | Comma-separated privileged user IDs (unlimited downloads) |
 | `CHANNEL_ID` | Yes | Target channel ID (e.g., -1001234567890) |
 | `LOG_CHANNEL_ID` | No | Admin log channel ID |
@@ -50,6 +51,8 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 | `RATE_LIMIT_WINDOW` | No | Time window in seconds (default 3600) |
 | `AUTO_DELETE_SECONDS` | No | Time before image is deleted (default 60) |
 | `PURGE_ON_START` | No | Set `true` to purge all images on deploy |
+| `PURGE_LIMITS_ON_START` | No | Set `true` to purge all rate limit records on deploy |
+| `PURGE_USERS_ON_START` | No | Set `true` to purge all user records on deploy |
 | `PORT` | No | Port for health check (default 8080) |
 
 ## Usage
@@ -61,7 +64,7 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 3. `/setlogchannel` - Set log channel
 4. Send photo with caption - Upload image
 5. `/list` - List images
-6. `/purge` - Delete all images
+6. `/purge [images|limits|users|all]` - Delete data selectively
 7. `/health` - Check bot health
 
 ### User Commands
@@ -75,8 +78,8 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 2. **Bot sends pixelated preview** to channel with "Get Original" button
 3. **User clicks "Get Original"** → Bot checks channel membership
 4. **If member & started bot** → Sends image to user's DM
-5. **Dynamic countdown** shows 60s → 30s → 10s → 5s → 4s → 3s → 2s → 1s
-6. **Auto-delete** after 60 seconds
+5. **Dynamic countdown** updates automatically based on `AUTO_DELETE_SECONDS`
+6. **Auto-delete** after configured seconds
 
 ## Docker Build
 
