@@ -182,6 +182,8 @@ class SecureImageBot:
         self.rate_limit_window = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))
         self.auto_delete_seconds = int(os.environ.get("AUTO_DELETE_SECONDS", "60"))
         
+        self.rate_limit_messages = {} # chat_id -> message_id
+        
         self._users_collection = self.store._db['users']
         self._users_collection.create_index("username")
         
@@ -226,6 +228,15 @@ class SecureImageBot:
                 text=message_text
             )
             
+            # Delete previous message if exists
+            if chat_id in self.rate_limit_messages:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=self.rate_limit_messages[chat_id])
+                except Exception:
+                    pass
+            
+            self.rate_limit_messages[chat_id] = sent_msg.message_id
+            
             async def update_timer():
                 remaining = timeout_seconds
                 message_id = sent_msg.message_id
@@ -236,6 +247,10 @@ class SecureImageBot:
                     
                     if remaining <= 0:
                         try:
+                            # Clean up tracking dictionary
+                            if chat_id in self.rate_limit_messages and self.rate_limit_messages[chat_id] == message_id:
+                                del self.rate_limit_messages[chat_id]
+                                
                             await context.bot.edit_message_text(
                                 chat_id=chat_id,
                                 message_id=message_id,
