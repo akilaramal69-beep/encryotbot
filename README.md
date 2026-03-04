@@ -1,12 +1,12 @@
 # Secure Image Bot
 
-A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends mosaic previews to a channel, and serves decrypted view-once images to users.
+A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends pixelated previews to a channel, and serves decrypted images to users with auto-delete countdown.
 
 ## Features
 
 - AES-256-GCM encryption for images
-- Mosaic/pixelated preview in channel
-- Download protection (configurable)
+- Pixelated preview in channel
+- Download protection (configurable via env)
 - Dynamic countdown timer (60s → 1s)
 - Auto-delete after 60 seconds
 - MongoDB storage (permanent)
@@ -31,13 +31,7 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 
 1. Push to GitHub
 2. Create app on Koyeb
-3. Configure environment variables:
-   - `BOT_TOKEN`: Your Telegram bot token
-   - `ADMIN_IDS`: Your user ID
-   - `CHANNEL_ID`: Target channel ID (e.g., -1001234567890)
-   - `LOG_CHANNEL_ID`: Admin log channel (optional)
-   - `MONGO_URI`: MongoDB connection string
-   - `PURGE_ON_START`: true (optional, clears all images on deploy)
+3. Configure environment variables
 4. Deploy
 
 ## Environment Variables
@@ -46,10 +40,10 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token |
 | `ADMIN_IDS` | Yes | Comma-separated admin user IDs |
-| `CHANNEL_ID` | Yes | Target channel ID |
+| `CHANNEL_ID` | Yes | Target channel ID (e.g., -1001234567890) |
 | `LOG_CHANNEL_ID` | No | Admin log channel ID |
 | `MONGO_URI` | Yes | MongoDB connection string |
-| `PROTECT_CONTENT` | No | `true` or `false` - prevents saving/forwarding |
+| `PROTECT_CONTENT` | No | `true`/`false` - prevents saving/forwarding |
 | `PURGE_ON_START` | No | Set `true` to purge all images on deploy |
 | `PORT` | No | Port for health check (default 8080) |
 
@@ -57,12 +51,13 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 
 ### Admin Commands
 
-1. **Register as admin**: `/start admin_<your_user_id>`
-2. **Set channel**: `/setchannel` → send channel ID
-3. **Set log channel**: `/setlogchannel` → send channel ID
-4. **Upload image**: Send photo with caption
-5. **List images**: `/list`
-6. **Purge all**: `/purge`
+1. `/start admin_<your_user_id>` - Register as admin
+2. `/setchannel` - Set target channel
+3. `/setlogchannel` - Set log channel
+4. Send photo with caption - Upload image
+5. `/list` - List images
+6. `/purge` - Delete all images
+7. `/health` - Check bot health
 
 ### User Commands
 
@@ -71,11 +66,12 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 
 ## How It Works
 
-1. **Admin uploads image** → Bot encrypts with AES-256-GCM → Stores in MongoDB
-2. **Bot sends mosaic preview** to channel with inline button
+1. **Admin uploads image** → Bot encrypts → Stores in MongoDB
+2. **Bot sends pixelated preview** to channel with "Get Original" button
 3. **User clicks "Get Original"** → Bot checks channel membership
-4. **If member & started bot** → Sends view-once image to user's DM
-5. **Auto-delete** after 60 minutes
+4. **If member & started bot** → Sends image to user's DM
+5. **Dynamic countdown** shows 60s → 30s → 10s → 5s → 4s → 3s → 2s → 1s
+6. **Auto-delete** after 60 seconds
 
 ## Docker Build
 
