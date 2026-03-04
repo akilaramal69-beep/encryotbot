@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 15
+    pixel_size = 9
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
