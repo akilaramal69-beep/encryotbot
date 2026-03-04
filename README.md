@@ -6,8 +6,9 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 
 - AES-256-GCM encryption for images
 - Mosaic/pixelated preview in channel
-- View-once images sent to users
-- Auto-delete after 60 minutes
+- Download protection (configurable)
+- Dynamic countdown timer (60s → 1s)
+- Auto-delete after 60 seconds
 - MongoDB storage (permanent)
 - Health check endpoint for Koyeb
 - Auto-purge on deployment option
@@ -48,6 +49,7 @@ A Telegram bot that encrypts images sent by admin, stores them in MongoDB, sends
 | `CHANNEL_ID` | Yes | Target channel ID |
 | `LOG_CHANNEL_ID` | No | Admin log channel ID |
 | `MONGO_URI` | Yes | MongoDB connection string |
+| `PROTECT_CONTENT` | No | `true` or `false` - prevents saving/forwarding |
 | `PURGE_ON_START` | No | Set `true` to purge all images on deploy |
 | `PORT` | No | Port for health check (default 8080) |
 

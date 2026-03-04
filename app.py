@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -127,6 +127,7 @@ class SecureImageBot:
         admin_ids_str = os.environ.get("ADMIN_IDS", "")
         encryption_key_str = os.environ.get("ENCRYPTION_KEY", "")
         mongo_uri = os.environ.get("MONGO_URI", "")
+        self.protect_content = os.environ.get("PROTECT_CONTENT", "true").lower() == "true"
         
         if not encryption_key_str:
             encryption_key_str = secrets.token_hex(32)
@@ -339,12 +340,32 @@ class SecureImageBot:
             decrypted = self.encryptor.decrypt(data["encrypted"])
             caption = data.get("caption") or data["filename"]
             
-            await context.bot.send_photo(
+            sent_msg = await context.bot.send_photo(
                 chat_id=update.effective_user.id,
                 photo=io.BytesIO(decrypted),
-                caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 seconds",
-                protect_content=True
+                caption=f"📷 {caption}\n\n🔒 Auto-delete in 60s",
+                protect_content=self.protect_content
             )
+            
+            async def countdown_and_delete():
+                for seconds in [30, 10, 5, 4, 3, 2, 1]:
+                    await asyncio.sleep(1)
+                    try:
+                        remaining = seconds
+                        await context.bot.edit_message_caption(
+                            chat_id=update.effective_user.id,
+                            message_id=sent_msg.message_id,
+                            caption=f"📷 {caption}\n\n🔒 Auto-delete in {remaining}s"
+                        )
+                    except:
+                        pass
+                
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_user.id, message_id=sent_msg.message_id)
+                except:
+                    pass
+            
+            asyncio.create_task(countdown_and_delete())
             
             await self.log(context, f"✅ Image sent: {image_id}")
             
@@ -417,18 +438,29 @@ class SecureImageBot:
                 sent_msg = await context.bot.send_photo(
                     chat_id=user_id,
                     photo=io.BytesIO(decrypted),
-                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 seconds",
-                    protect_content=True
+                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 60s",
+                    protect_content=self.protect_content
                 )
                 
-                async def delete_later():
-                    await asyncio.sleep(60)
+                async def countdown_and_delete():
+                    for seconds in [30, 10, 5, 4, 3, 2, 1]:
+                        await asyncio.sleep(1)
+                        try:
+                            remaining = seconds
+                            await context.bot.edit_message_caption(
+                                chat_id=user_id,
+                                message_id=sent_msg.message_id,
+                                caption=f"📷 {caption}\n\n🔒 Auto-delete in {remaining}s"
+                            )
+                        except:
+                            pass
+                    
                     try:
                         await context.bot.delete_message(chat_id=user_id, message_id=sent_msg.message_id)
                     except:
                         pass
                 
-                asyncio.create_task(delete_later())
+                asyncio.create_task(countdown_and_delete())
                 
                 await self.log(context, f"✅ Image sent to {user_name} {user_username}")
             except Exception as e:
