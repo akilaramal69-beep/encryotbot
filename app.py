@@ -92,19 +92,22 @@ class Encryptor:
     def __init__(self, key: bytes):
         self.aesgcm = AESGCM(key)
 
-    def encrypt(self, data: bytes) -> bytes:
+    async def encrypt(self, data: bytes) -> bytes:
         nonce = os.urandom(12)
-        ciphertext = self.aesgcm.encrypt(nonce, data, None)
+        ciphertext = await asyncio.to_thread(self.aesgcm.encrypt, nonce, data, None)
         return nonce + ciphertext
 
-    def decrypt(self, data: bytes) -> bytes:
+    async def decrypt(self, data: bytes) -> bytes:
         nonce = data[:12]
         ciphertext = data[12:]
-        return self.aesgcm.decrypt(nonce, ciphertext, None)
+        return await asyncio.to_thread(self.aesgcm.decrypt, nonce, ciphertext, None)
 
 
-def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
+def _create_preview_sync(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    
     img.thumbnail(max_size, Image.LANCZOS)
     
     pixel_size = 8
@@ -117,6 +120,10 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     output = io.BytesIO()
     pixelated.save(output, format="JPEG", quality=60)
     return output.getvalue()
+
+async def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
+    return await asyncio.to_thread(_create_preview_sync, image_bytes, max_size)
+
 
 
 class SecureImageBot:
@@ -157,7 +164,10 @@ class SecureImageBot:
         self.rate_limit_window = int(os.environ.get("RATE_LIMIT_WINDOW", "3600"))
         
         self._users_collection = self.store._db['users']
+        self._users_collection.create_index("username")
+        
         self._rate_collection = self.store._db['rate_limits']
+        self._rate_collection.create_index("user_id")
         
         logger.info(f"Rate limit config: enabled={self.rate_limit_enabled}, count={self.rate_limit_count}, window={self.rate_limit_window}")
         logger.info(f"Admin IDs: {self.admin_ids}")
@@ -165,18 +175,89 @@ class SecureImageBot:
         
         self._app: Optional[Application] = None
 
+    async def send_rate_limit_countdown(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, download_count: int, timeout_seconds: int):
+        """Sends a rate limit message that updates every second"""
+        try:
+            # Format initial time remaining
+            minutes, seconds = divmod(timeout_seconds, 60)
+            hours, minutes = divmod(minutes, 60)
+            
+            time_str = ""
+            if hours > 0:
+                time_str += f"{hours}h "
+            if minutes > 0:
+                time_str += f"{minutes}m "
+            time_str += f"{seconds}s"
+            
+            message_text = f"⚠️ Download limit reached!\n\nYou have used {download_count}/{self.rate_limit_count} downloads per {self.rate_limit_window // 3600} hour(s).\nTry again in {time_str}."
+            
+            sent_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_text
+            )
+            
+            async def update_timer():
+                remaining = timeout_seconds
+                message_id = sent_msg.message_id
+                
+                while remaining > 0:
+                    await asyncio.sleep(5) # Update every 5 seconds to avoid API limits
+                    remaining -= 5
+                    
+                    if remaining <= 0:
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text="✅ Your download limit has been reset! You can now request images."
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to edit rate limit message on reset: {e}")
+                        break
+                        
+                    # Format remaining time
+                    m, s = divmod(remaining, 60)
+                    h, m = divmod(m, 60)
+                    
+                    t_str = ""
+                    if h > 0: t_str += f"{h}h "
+                    if m > 0: t_str += f"{m}m "
+                    t_str += f"{s}s"
+                    
+                    new_text = f"⏳ Download limit reached!\n\nYou have used {download_count}/{self.rate_limit_count} downloads per {self.rate_limit_window // 3600} hour(s).\nTry again in {t_str}."
+                    
+                    # Only edit if text changed
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=new_text
+                        )
+                    except Exception as e:
+                        # Ignore "Message is not modified" errors
+                        if "Message is not modified" not in str(e):
+                            logger.error(f"Failed to update rate limit timer: {e}")
+            
+            # Start timer as background task
+            asyncio.create_task(update_timer())
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send rate limit countdown: {e}")
+            return False
+
+
     def check_rate_limit(self, user_id: int) -> tuple:
         try:
             if user_id in self.admin_ids:
                 logger.info(f"User {user_id} is admin - bypass rate limit")
-                return True, None, 0
+                return True, None, 0, 0
             
             if user_id in self.privileged_ids:
                 logger.info(f"User {user_id} is privileged - bypass rate limit")
-                return True, None, 0
+                return True, None, 0, 0
             
             if not self.rate_limit_enabled:
-                return True, None, 0
+                return True, None, 0, 0
             
             now = datetime.utcnow()
             
@@ -189,27 +270,19 @@ class SecureImageBot:
                 if first_download:
                     elapsed = (now - first_download).total_seconds()
                     
-                if elapsed > self.rate_limit_window + 1:
-                    self._rate_collection.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"first_download": now, "count": 1}}
-                    )
-                    logger.info(f"Rate limit window reset for user {user_id}")
-                    return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
+                    if elapsed >= self.rate_limit_window:
+                        self._rate_collection.update_one(
+                            {"user_id": user_id},
+                            {"$set": {"first_download": now, "count": 1}}
+                        )
+                        logger.info(f"Rate limit window reset for user {user_id}")
+                        return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
                     
                     if download_count >= self.rate_limit_count:
-                        reset_in = max(0, int(self.rate_limit_window - elapsed))
-                        if reset_in <= 0:
-                            self._rate_collection.update_one(
-                                {"user_id": user_id},
-                                {"$set": {"first_download": now, "count": 1}}
-                            )
-                            remaining = self.rate_limit_count - 1
-                            logger.info(f"Rate limit window expired for user {user_id}, starting new window")
-                            return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0
+                        reset_in = int(self.rate_limit_window - elapsed)
                         error_msg = f"⚠️ Download limit reached!\n\nYou have used {download_count} downloads.\nTry again in {reset_in} seconds."
                         logger.info(f"Rate limit HIT for user {user_id}, reset_in={reset_in}s")
-                        return False, error_msg, reset_in
+                        return False, error_msg, reset_in, download_count
                     
                     new_count = download_count + 1
                     self._rate_collection.update_one(
@@ -218,7 +291,7 @@ class SecureImageBot:
                     )
                     remaining = self.rate_limit_count - new_count
                     logger.info(f"Rate limit: User {user_id} downloaded. Remaining: {remaining}")
-                    return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0
+                    return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0, new_count
             
             self._rate_collection.insert_one({
                 "user_id": user_id,
@@ -227,10 +300,10 @@ class SecureImageBot:
             })
             
             logger.info(f"Rate limit: First download for user {user_id}, remaining: {self.rate_limit_count-1}")
-            return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
+            return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0, 1
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
-            return True, None, 0
+            return True, None, 0, 0
 
     async def track_user(self, user_id: int, username: str, first_name: str):
         try:
@@ -373,10 +446,10 @@ class SecureImageBot:
             image_bytes = await file.download_as_bytearray()
             
             await status_msg.edit_text("🔐 Encrypting image...")
-            encrypted = self.encryptor.encrypt(bytes(image_bytes))
+            encrypted = await self.encryptor.encrypt(bytes(image_bytes))
             
             await status_msg.edit_text("🖼️ Creating preview...")
-            preview = create_preview(bytes(image_bytes))
+            preview = await create_preview(bytes(image_bytes))
             filename = f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
             
             custom_caption = None
@@ -429,64 +502,61 @@ class SecureImageBot:
         if not image_id:
             return
         
-        user_id = update.effective_user.id
-        
-        if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
-            allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
-            logger.info(f"Rate limit check for /get command: user={user_id}, allowed={allowed}")
-            if not allowed:
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=error_msg
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send rate limit message: {e}")
-                    await update.message.reply_text(error_msg)
-                return
-        
         image_id = image_id.strip()
         data = self.store.get(image_id)
         
         if not data:
             await self.log(context, f"⚠️ Image not found: {image_id}")
             return
+            
+        user_id = update.effective_user.id
+        
+        if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
+            allowed, error_msg, remaining_secs, dl_count = self.check_rate_limit(user_id)
+            logger.info(f"Rate limit check for /get command: user={user_id}, allowed={allowed}")
+            if not allowed:
+                await self.send_rate_limit_countdown(context, user_id, dl_count, remaining_secs)
+                return
         
         try:
             decrypted = self.encryptor.decrypt(data["encrypted"])
             caption = data.get("caption") or data["filename"]
             
+            is_privileged = user_id in self.admin_ids or user_id in self.privileged_ids
+            auto_delete_caption = "🔒 Auto-delete in 60s" if not is_privileged else "🔓 No auto-delete"
+            
             sent_msg = await context.bot.send_photo(
                 chat_id=update.effective_user.id,
                 photo=io.BytesIO(decrypted),
-                caption=f"📷 {caption}\n\n🔒 Auto-delete in 60s",
+                caption=f"📷 {caption}\n\n{auto_delete_caption}",
                 protect_content=self.protect_content
             )
             
-            message_id = sent_msg.message_id
-            chat_id = update.effective_user.id
-            caption_text = caption
-            
-            async def update_countdown():
-                try:
-                    await asyncio.sleep(30)
-                    await context.bot.edit_message_caption(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
-                    )
-                except Exception as e:
-                    logger.error(f"Countdown update failed: {e}")
-            
-            async def delete_after_60():
-                try:
-                    await asyncio.sleep(60)
-                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                except Exception as e:
-                    logger.error(f"Delete failed: {e}")
-            
-            asyncio.create_task(update_countdown())
-            asyncio.create_task(delete_after_60())
+            if not is_privileged:
+                message_id = sent_msg.message_id
+                chat_id = update.effective_user.id
+                caption_text = caption
+                
+                async def update_countdown():
+                    try:
+                        await asyncio.sleep(30)
+                        await context.bot.edit_message_caption(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
+                        )
+                    except Exception as e:
+                        logger.error(f"Countdown update failed: {e}")
+                
+                async def delete_after_60():
+                    try:
+                        await asyncio.sleep(60)
+                        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                    except Exception as e:
+                        logger.error(f"Delete failed: {e}")
+                
+                asyncio.create_task(update_countdown())
+                asyncio.create_task(delete_after_60())
             
             await self.log(context, 
                 f"✅ Image sent via /get\n"
@@ -576,61 +646,61 @@ class SecureImageBot:
                     pass
                 return
             
-            if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
-                allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
-                logger.info(f"Rate limit check: user={user_id}, allowed={allowed}, msg={error_msg}")
-                if not allowed:
-                    try:
-                        sent = await context.bot.send_message(
-                            chat_id=user_id,
-                            text=error_msg
-                        )
-                        logger.info(f"Rate limit message sent to {user_id}, message_id={sent.message_id}")
-                    except Exception as e:
-                        logger.error(f"FAILED to send rate limit message to {user_id}: {e}")
-                        await query.answer(error_msg, show_alert=True)
-                    return
-            
             image_data = self.store.get(image_id)
             if not image_data:
                 await self.log(context, f"⚠️ Image not found: {image_id}")
                 return
+                
+            if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
+                allowed, error_msg, remaining_secs, dl_count = self.check_rate_limit(user_id)
+                logger.info(f"Rate limit check: user={user_id}, allowed={allowed}, msg={error_msg}")
+                if not allowed:
+                    # Notify and send countdown message
+                    await query.answer("⚠️ Download limit reached! Check your messages.", show_alert=True)
+                    await self.send_rate_limit_countdown(context, user_id, dl_count, remaining_secs)
+                    return
             
             try:
-                decrypted = self.encryptor.decrypt(image_data["encrypted"])
+                decrypted = await self.encryptor.decrypt(image_data["encrypted"])
+                
                 caption = image_data.get("caption") or image_data["filename"]
+                
+                is_privileged = user_id in self.admin_ids or user_id in self.privileged_ids
+                auto_delete_caption = "🔒 Auto-delete in 60s" if not is_privileged else "🔓 No auto-delete"
                 
                 sent_msg = await context.bot.send_photo(
                     chat_id=user_id,
                     photo=io.BytesIO(decrypted),
-                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 60s",
+                    caption=f"📷 {caption}\n\n{auto_delete_caption}",
                     protect_content=self.protect_content
                 )
                 
-                message_id = sent_msg.message_id
-                chat_id = user_id
-                caption_text = caption
-                
-                async def update_countdown():
-                    try:
-                        await asyncio.sleep(30)
-                        await context.bot.edit_message_caption(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
-                        )
-                    except Exception as e:
-                        logger.error(f"Countdown update failed: {e}")
-                
-                async def delete_after_60():
-                    try:
-                        await asyncio.sleep(60)
-                        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                    except Exception as e:
-                        logger.error(f"Delete failed: {e}")
-                
-                asyncio.create_task(update_countdown())
-                asyncio.create_task(delete_after_60())
+                if not is_privileged:
+                    message_id = sent_msg.message_id
+                    chat_id = user_id
+                    caption_text = caption
+                    
+                    async def update_countdown():
+                        try:
+                            await asyncio.sleep(30)
+                            await context.bot.edit_message_caption(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                caption=f"📷 {caption_text}\n\n🔒 Auto-delete in 30s"
+                            )
+                        except Exception as e:
+                            logger.error(f"Countdown update failed: {e}")
+                    
+                    async def delete_after_60():
+                        try:
+                            await asyncio.sleep(60)
+                            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                        except Exception as e:
+                            if "Message to delete not found" not in str(e):
+                                logger.error(f"Delete failed: {e}")
+                    
+                    asyncio.create_task(update_countdown())
+                    asyncio.create_task(delete_after_60())
                 
                 await self.log(context, 
                     f"✅ Image sent\n"
