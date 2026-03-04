@@ -189,16 +189,24 @@ class SecureImageBot:
                 if first_download:
                     elapsed = (now - first_download).total_seconds()
                     
-                    if elapsed >= self.rate_limit_window:
-                        self._rate_collection.update_one(
-                            {"user_id": user_id},
-                            {"$set": {"first_download": now, "count": 1}}
-                        )
-                        logger.info(f"Rate limit window reset for user {user_id}")
-                        return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
+                if elapsed > self.rate_limit_window + 1:
+                    self._rate_collection.update_one(
+                        {"user_id": user_id},
+                        {"$set": {"first_download": now, "count": 1}}
+                    )
+                    logger.info(f"Rate limit window reset for user {user_id}")
+                    return True, f"Downloaded! Remaining: {self.rate_limit_count-1}/{self.rate_limit_count}", 0
                     
                     if download_count >= self.rate_limit_count:
-                        reset_in = int(self.rate_limit_window - elapsed)
+                        reset_in = max(0, int(self.rate_limit_window - elapsed))
+                        if reset_in <= 0:
+                            self._rate_collection.update_one(
+                                {"user_id": user_id},
+                                {"$set": {"first_download": now, "count": 1}}
+                            )
+                            remaining = self.rate_limit_count - 1
+                            logger.info(f"Rate limit window expired for user {user_id}, starting new window")
+                            return True, f"Downloaded! Remaining: {remaining}/{self.rate_limit_count}", 0
                         error_msg = f"⚠️ Download limit reached!\n\nYou have used {download_count} downloads.\nTry again in {reset_in} seconds."
                         logger.info(f"Rate limit HIT for user {user_id}, reset_in={reset_in}s")
                         return False, error_msg, reset_in
