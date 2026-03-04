@@ -168,7 +168,18 @@ class SecureImageBot:
         self._users_collection.create_index("username")
         
         self._rate_collection = self.store._db['rate_limits']
-        self._rate_collection.create_index("user_id", unique=True)
+        try:
+            self._rate_collection.create_index("user_id", unique=True)
+        except Exception as e:
+            if "IndexKeySpecsConflict" in str(e) or "already exists" in str(e) or "same name" in str(e):
+                logger.info("Dropping old non-unique rate limit index to upgrade to unique...")
+                try:
+                    self._rate_collection.drop_index("user_id_1")
+                    self._rate_collection.create_index("user_id", unique=True)
+                except Exception as drop_e:
+                    logger.error(f"Failed to recreate unique index: {drop_e}")
+            else:
+                logger.error(f"Index creation error: {e}")
         
         logger.info(f"Rate limit config: enabled={self.rate_limit_enabled}, count={self.rate_limit_count}, window={self.rate_limit_window}")
         logger.info(f"Admin IDs: {self.admin_ids}")
