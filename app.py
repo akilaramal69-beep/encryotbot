@@ -109,7 +109,7 @@ def create_preview(image_bytes: bytes, max_size: tuple = (300, 300)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     img.thumbnail(max_size, Image.LANCZOS)
     
-    pixel_size = 10
+    pixel_size = 15
     img_small = img.resize(
         (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
         Image.NEAREST
@@ -296,7 +296,7 @@ class SecureImageBot:
             caption_text = f"🖼️ Secure Image\n"
             if custom_caption:
                 caption_text += f"\n{custom_caption}\n"
-            caption_text += f"ID: `{image_id}`\n\n🔒 Tap 'Get Original' to view\n⚠️ You must start @{bot_username} first!"
+            caption_text += f"ID: `{image_id}`\n\n🔒 Tap 'Get Original' to view\n⚠️ Must start bot first!"
             
             sent_msg = await context.bot.send_photo(
                 chat_id=self.channel_id,
@@ -342,8 +342,8 @@ class SecureImageBot:
             await context.bot.send_photo(
                 chat_id=update.effective_user.id,
                 photo=io.BytesIO(decrypted),
-                caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 minutes",
-                has_view_once=True
+                caption=f"📷 {caption}\n\n🔒 Auto-delete in 30 seconds",
+                protect_content=True
             )
             
             await self.log(context, f"✅ Image sent: {image_id}")
@@ -382,10 +382,15 @@ class SecureImageBot:
         user_id = query.from_user.id
         await query.answer()
         
-        data = query.data
+        callback_data = query.data
         
-        if data.startswith("req_"):
-            image_id = data[4:]
+        if callback_data.startswith("req_"):
+            image_id = callback_data[4:]
+            
+            if not self.channel_id:
+                logger.error("Channel not set! Admin needs to run /setchannel")
+                await query.answer("❌ Bot not configured. Contact admin.", show_alert=True)
+                return
             
             try:
                 member = await context.bot.get_chat_member(self.channel_id, user_id)
@@ -400,50 +405,68 @@ class SecureImageBot:
                 await self.log(context, f"⚠️ User {user_name} {user_username} not in channel")
                 return
             
-            data = self.store.get(image_id)
-            if not data:
+            image_data = self.store.get(image_id)
+            if not image_data:
                 await self.log(context, f"⚠️ Image not found: {image_id}")
                 return
             
+            caption = image_data.get("caption") or image_data["filename"]
+            view_keyboard = [
+                [InlineKeyboardButton("👁️ View Image", callback_data=f"view_{image_id}")]
+            ]
+            view_reply_markup = InlineKeyboardMarkup(view_keyboard)
+            
             try:
-                decrypted = self.encryptor.decrypt(data["encrypted"])
-                try:
-                    caption = data.get("caption") or data["filename"]
-                    sent_msg = await context.bot.send_photo(
-                        chat_id=user_id,
-                        photo=io.BytesIO(decrypted),
-                        caption=f"📷 {caption}\n\n🔒 Auto-delete in 60 minutes",
-                        has_view_once=True
-                    )
-                    
-                    async def delete_later():
-                        await asyncio.sleep(3600)
-                        try:
-                            await context.bot.delete_message(chat_id=user_id, message_id=sent_msg.message_id)
-                        except:
-                            pass
-                    
-                    asyncio.create_task(delete_later())
-                    
-                    await self.log(context, f"✅ Image sent to {user_name} {user_username}")
-                except Exception as bot_error:
-                    logger.error(f"DM send failed: {bot_error}")
-                    bot_username = context.bot.username
-                    await query.answer(
-                        f"❌ Cannot send. Start bot first: @{bot_username}",
-                        show_alert=True
-                    )
-                    await self.log(context, f"❌ DM failed for {user_name}")
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📷 {caption}\n\n👁️ Tap to view (auto-delete in 30 seconds)",
+                    reply_markup=view_reply_markup,
+                    protect_content=True
+                )
+                await self.log(context, f"✅ Image view prompt sent to {user_name} {user_username}")
+            except Exception as e:
+                logger.error(f"Failed to send view prompt: {e}")
+                await query.answer("❌ Cannot send. Start bot first!", show_alert=True)
+        
+        elif callback_data.startswith("view_"):
+            image_id = callback_data[4:]
+            
+            image_data = self.store.get(image_id)
+            if not image_data:
+                await query.answer("❌ Image not found", show_alert=True)
+                return
+            
+            try:
+                decrypted = self.encryptor.decrypt(image_data["encrypted"])
+                caption = image_data.get("caption") or image_data["filename"]
+                
+                sent_msg = await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=io.BytesIO(decrypted),
+                    caption=f"📷 {caption}\n\n🔒 Auto-delete in 30 seconds",
+                    protect_content=True
+                )
+                
+                async def delete_later():
+                    await asyncio.sleep(30)
+                    try:
+                        await context.bot.delete_message(chat_id=user_id, message_id=sent_msg.message_id)
+                    except:
+                        pass
+                
+                asyncio.create_task(delete_later())
+                
+                await self.log(context, f"✅ Image sent and will delete in 30s")
             except Exception as e:
                 logger.error(f"Error sending image: {e}")
-                await self.log(context, f"❌ Error: {str(e)[:100]}")
+                await query.answer("❌ Error loading image", show_alert=True)
         
-        elif data.startswith("del_"):
-            image_id = data[4:]
+        elif callback_data.startswith("del_"):
+            image_id = callback_data[4:]
             self.store.remove(image_id)
             await self.log(context, f"🗑️ Image deleted: {image_id}")
         
-        elif data == "get_image":
+        elif callback_data == "get_image":
             pass
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
