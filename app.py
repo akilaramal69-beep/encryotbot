@@ -160,6 +160,11 @@ class SecureImageBot:
         
         self._users_collection = self.store._db['users']
         self._rate_collection = self.store._db['rate_limits']
+        
+        logger.info(f"Rate limit config: enabled={self.rate_limit_enabled}, count={self.rate_limit_count}, window={self.rate_limit_window}")
+        logger.info(f"Admin IDs: {self.admin_ids}")
+        logger.info(f"Privileged IDs: {self.privileged_ids}")
+        
         self._app: Optional[Application] = None
 
     def check_rate_limit(self, user_id: int) -> tuple:
@@ -195,8 +200,12 @@ class SecureImageBot:
                     remaining_seconds = int((reset_time - now).total_seconds())
                     if remaining_seconds < 0:
                         remaining_seconds = 0
-                    return False, f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds", remaining_seconds
-                return False, "⚠️ Download limit reached. Try again later.", 0
+                    error_msg = f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\nTry again in {remaining_seconds} seconds"
+                    logger.info(f"Rate limit HIT for user {user_id}, remaining={remaining_seconds}s")
+                    return False, error_msg, remaining_seconds
+                error_msg = "⚠️ Download limit reached. Try again later."
+                logger.info(f"Rate limit HIT for user {user_id}")
+                return False, error_msg, 0
             
             self._rate_collection.insert_one({
                 "user_id": user_id,
@@ -409,32 +418,16 @@ class SecureImageBot:
         
         if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
             allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
+            logger.info(f"Rate limit check for /get command: user={user_id}, allowed={allowed}")
             if not allowed:
-                if remaining_secs > 0:
-                    status_msg = await update.message.reply_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Calculating...")
-                    
-                    async def send_countdown():
-                        secs = remaining_secs
-                        while secs > 0:
-                            await asyncio.sleep(min(10, secs))
-                            secs -= min(10, secs)
-                            try:
-                                minutes = secs // 60
-                                seconds = secs % 60
-                                if minutes > 0:
-                                    await status_msg.edit_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Next download in: {minutes}m {seconds}s")
-                                else:
-                                    await status_msg.edit_text(f"⚠️ Download limit reached ({self.rate_limit_count}/hour)\n\n⏳ Next download in: {secs}s")
-                            except:
-                                break
-                        try:
-                            await status_msg.edit_text("✅ You can now download images!")
-                        except:
-                            pass
-                    
-                    asyncio.create_task(send_countdown())
-                else:
-                    await update.message.reply_text(f"❌ {error_msg}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=error_msg
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send rate limit message: {e}")
+                    await update.message.reply_text(error_msg)
                 return
         
         image_id = image_id.strip()
@@ -559,14 +552,27 @@ class SecureImageBot:
             
             if not member or member.status in ['left', 'kicked']:
                 await self.log(context, f"⚠️ User {user_name} {user_username} not in channel")
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="❌ You must join the channel first to view images!"
+                    )
+                except:
+                    pass
                 return
             
             if self.rate_limit_enabled and user_id not in self.admin_ids and user_id not in self.privileged_ids:
                 allowed, error_msg, remaining_secs = self.check_rate_limit(user_id)
+                logger.info(f"Rate limit check: user={user_id}, allowed={allowed}, msg={error_msg}")
                 if not allowed:
-                    if remaining_secs > 0:
-                        await query.answer(f"⚠️ Limit reached! Try again in {remaining_secs}s", show_alert=True)
-                    else:
+                    try:
+                        sent = await context.bot.send_message(
+                            chat_id=user_id,
+                            text=error_msg
+                        )
+                        logger.info(f"Rate limit message sent to {user_id}, message_id={sent.message_id}")
+                    except Exception as e:
+                        logger.error(f"FAILED to send rate limit message to {user_id}: {e}")
                         await query.answer(error_msg, show_alert=True)
                     return
             
